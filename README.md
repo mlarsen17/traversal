@@ -28,7 +28,7 @@ This setup uses **two Postgres containers** for clarity:
 ## Prerequisites
 
 - Docker Engine + Docker Compose plugin (for containerized mode)
-- Python 3.11 (for non-Docker dev mode)
+- Python 3.11+ (for non-Docker dev mode)
 
 ## Docker mode (local/prod-like)
 
