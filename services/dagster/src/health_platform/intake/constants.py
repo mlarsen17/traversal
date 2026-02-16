@@ -1,0 +1,3 @@
+INBOX_ROOT = "inbox"
+RAW_ROOT = "raw"
+MARKER_FILENAME = "_SUCCESS"

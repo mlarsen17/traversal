@@ -1,0 +1,29 @@
+{
+  "file_type": "pharmacy",
+  "layout_version": "v1",
+  "status": "ACTIVE",
+  "schema": {
+    "source": "synthea_medications_csv",
+    "columns": [
+      {"name": "START", "type": "datetime", "required": true},
+      {"name": "STOP", "type": "datetime", "required": false},
+      {"name": "PATIENT", "type": "string", "required": true},
+      {"name": "PAYER", "type": "string", "required": false},
+      {"name": "ENCOUNTER", "type": "string", "required": false},
+      {"name": "CODE", "type": "string", "required": true},
+      {"name": "DESCRIPTION", "type": "string", "required": false},
+      {"name": "BASE_COST", "type": "decimal", "required": false},
+      {"name": "PAYER_COVERAGE", "type": "decimal", "required": false},
+      {"name": "DISPENSES", "type": "integer", "required": false},
+      {"name": "TOTALCOST", "type": "decimal", "required": false},
+      {"name": "REASONCODE", "type": "string", "required": false},
+      {"name": "REASONDESCRIPTION", "type": "string", "required": false}
+    ]
+  },
+  "parser_config": {
+    "delimiter": ",",
+    "header": true,
+    "encoding": "utf-8",
+    "date_formats": ["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"]
+  }
+}

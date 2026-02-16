@@ -1,0 +1,31 @@
+{
+  "file_type": "medical",
+  "layout_version": "v1",
+  "status": "ACTIVE",
+  "schema": {
+    "source": "synthea_encounters_csv",
+    "columns": [
+      {"name": "Id", "type": "string", "required": true},
+      {"name": "START", "type": "datetime", "required": true},
+      {"name": "STOP", "type": "datetime", "required": false},
+      {"name": "PATIENT", "type": "string", "required": true},
+      {"name": "ORGANIZATION", "type": "string", "required": false},
+      {"name": "PROVIDER", "type": "string", "required": false},
+      {"name": "PAYER", "type": "string", "required": false},
+      {"name": "ENCOUNTERCLASS", "type": "string", "required": false},
+      {"name": "CODE", "type": "string", "required": false},
+      {"name": "DESCRIPTION", "type": "string", "required": false},
+      {"name": "BASE_ENCOUNTER_COST", "type": "decimal", "required": false},
+      {"name": "TOTAL_CLAIM_COST", "type": "decimal", "required": false},
+      {"name": "PAYER_COVERAGE", "type": "decimal", "required": false},
+      {"name": "REASONCODE", "type": "string", "required": false},
+      {"name": "REASONDESCRIPTION", "type": "string", "required": false}
+    ]
+  },
+  "parser_config": {
+    "delimiter": ",",
+    "header": true,
+    "encoding": "utf-8",
+    "date_formats": ["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"]
+  }
+}

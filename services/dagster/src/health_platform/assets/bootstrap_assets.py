@@ -2,14 +2,14 @@ import io
 import os
 from datetime import datetime, timezone
 
-from dagster import AssetExecutionContext, MaterializeResult, asset
+from dagster import MaterializeResult, asset
 
 from health_platform.utils.db import insert_bootstrap_heartbeat
 from health_platform.utils.s3 import upload_text_object
 
 
 @asset(group_name="bootstrap", required_resource_keys={"metadata_db", "minio"})
-def bootstrap_heartbeat_asset(context: AssetExecutionContext) -> MaterializeResult:
+def bootstrap_heartbeat_asset(context) -> MaterializeResult:
     message = "phase0_ok"
     created_at = datetime.now(timezone.utc)
 
