@@ -1,0 +1,7 @@
+.venv/
+.dagster_home/
+.local/
+.local_object_store/
+__pycache__/
+*.pyc
+.env
