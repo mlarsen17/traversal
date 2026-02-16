@@ -22,7 +22,9 @@ class ObjectStore(Protocol):
 
     def delete_object(self, key: str) -> None: ...
 
-    def put_bytes(self, key: str, payload: bytes, content_type: str = "application/octet-stream") -> None: ...
+    def put_bytes(
+        self, key: str, payload: bytes, content_type: str = "application/octet-stream"
+    ) -> None: ...
 
     def get_bytes(self, key: str) -> bytes: ...
 
@@ -67,12 +69,16 @@ class S3ObjectStore:
         )
 
     def copy_object(self, source_key: str, dest_key: str) -> None:
-        self.client.copy_object(Bucket=self.bucket, CopySource={"Bucket": self.bucket, "Key": source_key}, Key=dest_key)
+        self.client.copy_object(
+            Bucket=self.bucket, CopySource={"Bucket": self.bucket, "Key": source_key}, Key=dest_key
+        )
 
     def delete_object(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
-    def put_bytes(self, key: str, payload: bytes, content_type: str = "application/octet-stream") -> None:
+    def put_bytes(
+        self, key: str, payload: bytes, content_type: str = "application/octet-stream"
+    ) -> None:
         self.client.put_object(Bucket=self.bucket, Key=key, Body=payload, ContentType=content_type)
 
     def get_bytes(self, key: str) -> bytes:

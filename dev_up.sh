@@ -20,10 +20,11 @@ mkdir -p "${DAGSTER_HOME_DIR}" "${LOCAL_DB_DIR}" "${MINIO_DATA_DIR}" "${MINIO_BI
 cp "${ROOT_DIR}/services/dagster/dagster.dev.yaml" "${DAGSTER_HOME_DIR}/dagster.yaml"
 
 MINIO_ENDPOINT="${MINIO_ENDPOINT:-127.0.0.1:9000}"
+S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-http://${MINIO_ENDPOINT}}"
 MINIO_CONSOLE_ADDRESS="${MINIO_CONSOLE_ADDRESS:-127.0.0.1:9001}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
-RAW_BUCKET_NAME="${RAW_BUCKET_NAME:-health-raw}"
+S3_BUCKET="${S3_BUCKET:-health-raw}"
 
 MINIO_BIN="${MINIO_BINARY:-}"
 if [[ -z "${MINIO_BIN}" ]]; then
@@ -67,13 +68,11 @@ done
 
 export DAGSTER_HOME="${DAGSTER_HOME_DIR}"
 export METADATA_DB_URL="sqlite:///${LOCAL_DB_DIR}/metadata.db"
-export OBJECT_STORE_MODE="s3"
-export MINIO_ENDPOINT="${MINIO_ENDPOINT}"
-export MINIO_ACCESS_KEY="${MINIO_ROOT_USER}"
-export MINIO_SECRET_KEY="${MINIO_ROOT_PASSWORD}"
-export MINIO_REGION="${MINIO_REGION:-us-east-1}"
-export MINIO_SECURE="false"
-export RAW_BUCKET_NAME="${RAW_BUCKET_NAME}"
+export S3_ENDPOINT_URL="${S3_ENDPOINT_URL}"
+export S3_ACCESS_KEY_ID="${MINIO_ROOT_USER}"
+export S3_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}"
+export S3_REGION="${S3_REGION:-us-east-1}"
+export S3_BUCKET="${S3_BUCKET}"
 
 python - <<'PY'
 import boto3
@@ -81,13 +80,13 @@ import os
 
 client = boto3.client(
     "s3",
-    endpoint_url=f"http://{os.environ['MINIO_ENDPOINT']}",
-    aws_access_key_id=os.environ["MINIO_ACCESS_KEY"],
-    aws_secret_access_key=os.environ["MINIO_SECRET_KEY"],
-    region_name=os.environ["MINIO_REGION"],
+    endpoint_url=os.environ["S3_ENDPOINT_URL"],
+    aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
+    region_name=os.environ["S3_REGION"],
 )
 
-bucket_name = os.environ["RAW_BUCKET_NAME"]
+bucket_name = os.environ["S3_BUCKET"]
 existing = {entry["Name"] for entry in client.list_buckets().get("Buckets", [])}
 if bucket_name not in existing:
     client.create_bucket(Bucket=bucket_name)

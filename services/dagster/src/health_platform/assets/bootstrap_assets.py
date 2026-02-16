@@ -5,10 +5,9 @@ from datetime import datetime, timezone
 from dagster import MaterializeResult, asset
 
 from health_platform.utils.db import insert_bootstrap_heartbeat
-from health_platform.utils.s3 import upload_text_object
 
 
-@asset(group_name="bootstrap", required_resource_keys={"metadata_db", "minio"})
+@asset(group_name="bootstrap", required_resource_keys={"metadata_db", "object_store"})
 def bootstrap_heartbeat_asset(context) -> MaterializeResult:
     message = "phase0_ok"
     created_at = datetime.now(timezone.utc)
@@ -16,10 +15,12 @@ def bootstrap_heartbeat_asset(context) -> MaterializeResult:
     insert_bootstrap_heartbeat(context.resources.metadata_db, message, created_at)
     context.log.info("Inserted bootstrap heartbeat row into metadata database")
 
-    raw_bucket_name = os.getenv("RAW_BUCKET_NAME", "health-raw")
+    raw_bucket_name = os.getenv("S3_BUCKET", "health-raw")
     payload = io.BytesIO(b"hello from phase 0\n")
-    upload_text_object(context.resources.minio, raw_bucket_name, "bootstrap/hello.txt", payload)
-    context.log.info("Uploaded bootstrap/hello.txt to MinIO bucket '%s'", raw_bucket_name)
+    context.resources.object_store.put_bytes(
+        "bootstrap/hello.txt", payload.read(), content_type="text/plain"
+    )
+    context.log.info("Uploaded bootstrap/hello.txt to object store bucket '%s'", raw_bucket_name)
 
     return MaterializeResult(
         metadata={
