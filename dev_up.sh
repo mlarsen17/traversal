@@ -11,7 +11,7 @@ python3 -m venv "${VENV_DIR}"
 source "${VENV_DIR}/bin/activate"
 
 python -m pip install --upgrade pip
-python -m pip install -e "${ROOT_DIR}/services/dagster"
+python -m pip install -e "${ROOT_DIR}/services/dagster[dev]"
 python -m pip install alembic==1.14.1
 
 mkdir -p "${DAGSTER_HOME_DIR}" "${LOCAL_DB_DIR}"
@@ -24,11 +24,13 @@ export MINIO_ENDPOINT="${MINIO_ENDPOINT:-127.0.0.1:9000}"
 export MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-minioadmin}"
 export MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-minioadmin}"
 export MINIO_SECURE="${MINIO_SECURE:-false}"
+export MINIO_REGION="${MINIO_REGION:-us-east-1}"
 export INBOX_PREFIX="inbox/"
 export RAW_PREFIX="raw/"
 export QUIESCENCE_MINUTES="15"
 export GROUP_BY_DEPTH="3"
 export CLASSIFY_CONFIDENCE_THRESHOLD="0.7"
+export CLASSIFIER_IMPL="submitter_filename"
 
 (
   cd "${ROOT_DIR}/services/migrations"

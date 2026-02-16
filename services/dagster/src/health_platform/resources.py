@@ -28,4 +28,5 @@ def metadata_db_resource(_context):
 
 @resource
 def minio_resource(_context):
+    """Object store resource backed by MinIO/S3 client implementation."""
     yield create_object_store()

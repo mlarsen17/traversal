@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "health-platform"
 version = "0.1.0"
-description = "Phase 0 Dagster foundation for health data ingestion"
+description = "Phase 1 Dagster intake foundation for health data ingestion"
 requires-python = ">=3.11,<3.13"
 dependencies = [
   "dagster==1.10.4",

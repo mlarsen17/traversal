@@ -1,4 +1,4 @@
-# Health Data Ingestion Platform - Phase 0 Foundation
+# Health Data Ingestion Platform - Phase 1 Intake Foundation
 
 A production-oriented local foundation for a health data ingestion platform, using **Dagster** for orchestration, **Postgres** for Dagster + metadata storage, and **MinIO** for S3-compatible object storage.
 
