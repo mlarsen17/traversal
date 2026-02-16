@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools==75.8.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "health-platform"
+version = "0.1.0"
+description = "Phase 0 Dagster foundation for health data ingestion"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "dagster==1.10.4",
+  "dagster-webserver==1.10.4",
+  "dagster-postgres==0.26.4",
+  "psycopg2-binary==2.9.10",
+  "sqlalchemy==2.0.37",
+  "alembic==1.14.1",
+  "boto3==1.36.11",
+  "python-dotenv==1.0.1",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
