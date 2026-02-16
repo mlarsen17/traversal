@@ -1,194 +1,67 @@
-# Health Data Ingestion Platform - Phase 0 Foundation
+# Health Data Ingestion Platform - Phase 1 Intake
 
-A production-oriented local foundation for a health data ingestion platform, using **Dagster** for orchestration, **Postgres** for Dagster + metadata storage, and **MinIO** for S3-compatible object storage.
+This repository now includes Phase 0 foundation plus **Phase 1 intake registration**:
 
-## What this includes
+- Dagster orchestration + sensors for inbox discovery/grouping
+- Metadata DB (Postgres in Docker, SQLite in dev mode)
+- Object store support via S3-compatible API (MinIO in local/dev)
+- Canonical internal manifest generation (`manifest.generated.json`)
+- Layout registry sync asset seeded from Synthea CSV data dictionary examples
 
-- Containerized runtime with Docker Compose
-- Dagster webserver + daemon
-- Dagster instance storage configured to **Postgres** (run/event/schedule storage)
-- Separate metadata Postgres database for platform tables
-- Alembic migrations for metadata DB
-- MinIO + one-shot bucket initialization
-- A `bootstrap_heartbeat_asset` Dagster asset that:
-  - inserts `phase0_ok` into `bootstrap_heartbeat`
-  - uploads `bootstrap/hello.txt` into `health-raw`
-- A **non-Docker dev mode** for Codex/runtime environments that do not have Docker:
-  - Dagster local filesystem storage
-  - SQLite metadata DB
-  - standalone local MinIO server (binary) for S3-compatible object storage
+## Intake behavior (no client manifest required)
 
-## Architecture
+Submitters drop files under:
 
-This setup uses **two Postgres containers** for clarity:
+- `inbox/{submitter_id}/{filename}`
+- optional: `inbox/{submitter_id}/{drop_folder}/{filename}`
 
-- `dagster_postgres`: Dagster internal storage
-- `metadata_postgres`: platform metadata tables managed by Alembic
+Accepted default naming pattern:
 
-## Prerequisites
+- `{file_type}_YYYYMM_YYYYMM.(txt|csv|gz)` where `file_type` is one of:
+  - `medical`
+  - `pharmacy`
+  - `members`
+  - `enrollment`
 
-- Docker Engine + Docker Compose plugin (for containerized mode)
-- Python 3.11+ (for non-Docker dev mode, including Python 3.12)
+Grouping closes using:
 
-## Docker mode (local/prod-like)
+1. **Marker-based**: `_SUCCESS` in a folder (preferred)
+2. **Quiescence-based**: no file change for N minutes (default `10`, configurable via `INTAKE_QUIESCENCE_MINUTES`)
 
-1. Copy env file:
+Closed groups are registered as a submission and moved immutably to:
 
-   ```bash
-   cp .env.example .env
-   ```
+- `raw/{submitter_id}/{file_type}/{submission_id}/data/{original_filename}`
+- `raw/{submitter_id}/{file_type}/{submission_id}/manifest.generated.json`
 
-2. Start all services:
+Unknown classification routes submission status to `NEEDS_REVIEW`.
 
-   ```bash
-   docker compose up --build
-   ```
+## Running locally with Docker
 
-3. Open Dagster UI:
+```bash
+docker compose up --build
+```
 
-   - http://localhost:3000
-
-## Non-Docker dev mode (Codex-friendly)
-
-Run:
+## Running in dev mode (no Docker)
 
 ```bash
 ./dev_up.sh
 ```
 
-What `dev_up.sh` does:
+## Tests
 
-1. Creates `.venv`
-2. Installs Dagster project dependencies from `services/dagster/pyproject.toml`
-3. Starts a standalone MinIO server using the local binary (auto-downloads from GitHub releases, with dl.min.io fallback)
-4. Sets dev-mode env vars (`METADATA_DB_URL=sqlite:///...`, S3/MinIO credentials + endpoint)
-5. Creates the `health-raw` bucket if it does not exist
-6. Runs Alembic migrations against SQLite
-7. Starts `dagster dev` on port `3000`
-
-You can override binary download sources if needed:
+Run all tests:
 
 ```bash
-export MINIO_DOWNLOAD_URL="https://github.com/minio/minio/releases/latest/download/minio"
-export MINIO_FALLBACK_DOWNLOAD_URL="https://dl.min.io/server/minio/release/linux-amd64/minio"
+pytest -q
 ```
 
-Dev-mode local state paths:
+## Add a new filename convention
 
-- Dagster home/config: `.dagster_home/`
-- SQLite metadata DB: `.local/metadata.db`
-- MinIO data dir: `.local/minio-data/`
-- MinIO server log: `.local/minio.log`
+1. Create a class implementing `FilenameConvention` in `services/dagster/src/health_platform/intake/filename_conventions.py` (or another intake module).
+2. Implement:
+   - `name`
+   - `match(filename)`
+   - `parse(filename) -> ParsedFilename`
+3. Register it in a `ConventionRegistry` (e.g., augment `default_registry()` or inject one in tests/services).
 
-## Running the hello asset
-
-### From Dagster UI
-
-1. Open **Assets**.
-2. Select `bootstrap_heartbeat_asset`.
-3. Click **Materialize**.
-
-### From CLI in Docker mode
-
-```bash
-docker compose exec dagster_webserver dagster asset materialize --select bootstrap_heartbeat_asset -w /opt/dagster/app/workspace.yaml
-```
-
-### From CLI in non-Docker dev mode
-
-```bash
-source .venv/bin/activate
-export DAGSTER_HOME=.dagster_home
-dagster asset materialize --select bootstrap_heartbeat_asset -w services/dagster/workspace.yaml
-```
-
-## Verify outputs
-
-### Verify metadata DB row
-
-Docker mode:
-
-```bash
-docker compose exec metadata_postgres psql -U "$METADATA_PG_USER" -d "$METADATA_PG_DB" -c "SELECT id, created_at, message FROM bootstrap_heartbeat ORDER BY id DESC LIMIT 5;"
-```
-
-Dev mode (SQLite):
-
-```bash
-python - <<'PY'
-import sqlite3
-conn = sqlite3.connect('.local/metadata.db')
-rows = conn.execute('SELECT id, created_at, message FROM bootstrap_heartbeat ORDER BY id DESC LIMIT 5').fetchall()
-print(rows)
-conn.close()
-PY
-```
-
-### Verify object exists
-
-Docker mode (MinIO console):
-
-- http://localhost:9001
-- Login using `.env` credentials (`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`)
-- Navigate to bucket `health-raw`
-- Confirm object `bootstrap/hello.txt`
-
-Dev mode (MinIO API):
-
-```bash
-python - <<'PY'
-import boto3
-client = boto3.client(
-    "s3",
-    endpoint_url="http://127.0.0.1:9000",
-    aws_access_key_id="minioadmin",
-    aws_secret_access_key="minioadmin",
-    region_name="us-east-1",
-)
-obj = client.get_object(Bucket="health-raw", Key="bootstrap/hello.txt")
-print(obj["Body"].read().decode())
-PY
-```
-
-## Service list (docker-compose)
-
-- `dagster_webserver` (port 3000)
-- `dagster_daemon`
-- `dagster_postgres` (port 5432)
-- `metadata_postgres`
-- `minio` (API 9000, Console 9001)
-- `minio_init` (one-shot bucket setup)
-- `migrations` (one-shot Alembic migration)
-
-## Troubleshooting
-
-- **Dagster UI is up but no assets visible**
-  - Check `dagster_webserver` logs:
-    ```bash
-    docker compose logs -f dagster_webserver
-    ```
-- **Migration container failed (docker mode)**
-  - Re-run migrations:
-    ```bash
-    docker compose run --rm migrations alembic upgrade head
-    ```
-- **Dev-mode migration failed**
-  - Ensure `METADATA_DB_URL` points to a writable SQLite path.
-- **MinIO bucket missing (docker mode)**
-  - Re-run bucket init:
-    ```bash
-    docker compose run --rm minio_init
-    ```
-- **Port conflicts**
-  - Ensure local ports `3000`, `5432`, `9000`, and `9001` are available.
-
-## Optional Makefile helpers
-
-```bash
-make up
-make down
-make logs
-make dagster-cli CMD="asset materialize --select bootstrap_heartbeat_asset -w /opt/dagster/app/workspace.yaml"
-make psql
-make minio-shell
-```
+This design keeps filename parsing pluggable without changing core grouping/move/register logic.

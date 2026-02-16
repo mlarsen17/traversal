@@ -16,7 +16,10 @@ dependencies = [
   "alembic==1.14.1",
   "boto3==1.36.11",
   "python-dotenv==1.0.1",
+  "pytest==8.3.4",
+  "moto[s3]==5.1.1",
 ]
+
 
 [tool.setuptools]
 package-dir = {"" = "src"}

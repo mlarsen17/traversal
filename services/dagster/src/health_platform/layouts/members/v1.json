@@ -1,0 +1,36 @@
+{
+  "file_type": "members",
+  "layout_version": "v1",
+  "status": "ACTIVE",
+  "schema": {
+    "source": "synthea_patients_csv",
+    "columns": [
+      {"name": "Id", "type": "string", "required": true},
+      {"name": "BIRTHDATE", "type": "date", "required": false},
+      {"name": "DEATHDATE", "type": "date", "required": false},
+      {"name": "SSN", "type": "string", "required": false},
+      {"name": "DRIVERS", "type": "string", "required": false},
+      {"name": "PASSPORT", "type": "string", "required": false},
+      {"name": "PREFIX", "type": "string", "required": false},
+      {"name": "FIRST", "type": "string", "required": false},
+      {"name": "LAST", "type": "string", "required": false},
+      {"name": "SUFFIX", "type": "string", "required": false},
+      {"name": "MAIDEN", "type": "string", "required": false},
+      {"name": "MARITAL", "type": "string", "required": false},
+      {"name": "RACE", "type": "string", "required": false},
+      {"name": "ETHNICITY", "type": "string", "required": false},
+      {"name": "GENDER", "type": "string", "required": false},
+      {"name": "BIRTHPLACE", "type": "string", "required": false},
+      {"name": "ADDRESS", "type": "string", "required": false},
+      {"name": "CITY", "type": "string", "required": false},
+      {"name": "STATE", "type": "string", "required": false},
+      {"name": "ZIP", "type": "string", "required": false}
+    ]
+  },
+  "parser_config": {
+    "delimiter": ",",
+    "header": true,
+    "encoding": "utf-8",
+    "date_formats": ["%Y-%m-%d"]
+  }
+}
