@@ -1,0 +1,12 @@
+{
+  "file_type": "enrollment",
+  "layout_version": "v1",
+  "schema_json": {
+    "columns": ["member_id", "coverage_start", "coverage_end", "plan_id"]
+  },
+  "parser_config_json": {
+    "format": "csv",
+    "delimiter": ",",
+    "header": true
+  }
+}

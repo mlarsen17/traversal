@@ -1,0 +1,12 @@
+{
+  "file_type": "medical",
+  "layout_version": "v1",
+  "schema_json": {
+    "columns": ["member_id", "claim_id", "service_date", "paid_amount"]
+  },
+  "parser_config_json": {
+    "format": "csv",
+    "delimiter": ",",
+    "header": true
+  }
+}

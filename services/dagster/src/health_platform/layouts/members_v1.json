@@ -1,0 +1,12 @@
+{
+  "file_type": "members",
+  "layout_version": "v1",
+  "schema_json": {
+    "columns": ["member_id", "first_name", "last_name", "dob"]
+  },
+  "parser_config_json": {
+    "format": "csv",
+    "delimiter": ",",
+    "header": true
+  }
+}

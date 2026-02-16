@@ -16,7 +16,7 @@ A production-oriented local foundation for a health data ingestion platform, usi
 - A **non-Docker dev mode** for Codex/runtime environments that do not have Docker:
   - Dagster local filesystem storage
   - SQLite metadata DB
-  - local folder-backed object store
+  - installed/running MinIO (S3-compatible) object store
 
 ## Architecture
 
@@ -60,7 +60,7 @@ What `dev_up.sh` does:
 
 1. Creates `.venv`
 2. Installs Dagster project dependencies from `services/dagster/pyproject.toml`
-3. Sets dev-mode env vars (`METADATA_DB_URL=sqlite:///...`, `OBJECT_STORE_MODE=local`)
+3. Sets dev-mode env vars (`METADATA_DB_URL=sqlite:///...`, MinIO endpoint/credentials)
 4. Runs Alembic migrations against SQLite
 5. Starts `dagster dev` on port `3000`
 
@@ -68,7 +68,7 @@ Dev-mode local state paths:
 
 - Dagster home/config: `.dagster_home/`
 - SQLite metadata DB: `.local/metadata.db`
-- Object store files: `.local_object_store/health-raw/bootstrap/hello.txt`
+- Object store location: MinIO bucket `health-raw`
 
 ## Running the hello asset
 
@@ -126,7 +126,7 @@ Docker mode (MinIO console):
 Dev mode:
 
 ```bash
-cat .local_object_store/health-raw/bootstrap/hello.txt
+mc cat local/health-raw/bootstrap/hello.txt
 ```
 
 ## Service list (docker-compose)
@@ -171,3 +171,89 @@ make dagster-cli CMD="asset materialize --select bootstrap_heartbeat_asset -w /o
 make psql
 make minio-shell
 ```
+
+## Phase 1 intake-driven submission registration
+
+Phase 1 adds inbox discovery + grouping (marker file or quiescence), internal manifest generation, submission registration, and inbox-to-raw staging.
+
+### Dev-mode run in Codex
+
+Use existing startup:
+
+```bash
+./dev_up.sh
+```
+
+Then in another shell:
+
+```bash
+source .venv/bin/activate
+export DAGSTER_HOME=.dagster_home
+```
+
+### Simulate an inbox drop (MinIO object store)
+
+Ensure your local MinIO alias is configured first (`mc alias set local http://127.0.0.1:9000 minioadmin minioadmin`).
+
+Create a drop in MinIO bucket/prefix:
+
+```bash
+cat > /tmp/medical_claims.csv <<'CSV'
+member_id,claim_id,service_date,paid_amount
+m1,c1,2026-01-01,100.25
+CSV
+mc cp /tmp/medical_claims.csv local/health-raw/inbox/acme/unknown/drop-001/medical_claims.csv
+mc cp /dev/null local/health-raw/inbox/acme/unknown/drop-001/_SUCCESS
+```
+
+Materialize layout sync and evaluate the sensor/job:
+
+```bash
+dagster asset materialize --select sync_layout_registry -w services/dagster/workspace.yaml
+dagster sensor preview --sensor-name inbox_discovery_sensor -w services/dagster/workspace.yaml
+```
+
+Run the registration job manually for the grouping key if desired:
+
+```bash
+dagster job launch -j register_submission_from_group_job -w services/dagster/workspace.yaml \
+  -c <(cat <<'YAML'
+ops:
+  register_submission_from_group:
+    config:
+      grouping_key: inbox/acme/unknown/drop-001/
+      grouping_method: MARKER_FILE
+YAML
+)
+```
+
+### Completion semantics
+
+A group closes when either:
+
+- `.../_SUCCESS` marker file is present in the grouped prefix, or
+- no object in that group changed in `QUIESCENCE_MINUTES`.
+
+Grouping key is derived from `INBOX_PREFIX` + `GROUP_BY_DEPTH` segments (default 3: submitter/file_type/drop_id).
+
+### Where outputs appear
+
+- Staged immutable files:
+  - `s3://health-raw/raw/{submitter_id}/{file_type_or_unknown}/{submission_id}/...`
+- Generated manifest:
+  - `_manifest.generated.json` in the submission raw prefix root.
+
+### Inspect DB rows (SQLite dev mode)
+
+```bash
+python - <<'PY'
+import sqlite3
+conn = sqlite3.connect('.local/metadata.db')
+for table in ['submission', 'submission_file', 'inbox_object', 'layout_registry']:
+    rows = conn.execute(f'SELECT * FROM {table} LIMIT 5').fetchall()
+    print(table, rows)
+conn.close()
+PY
+```
+
+Classifier implementation can be swapped by setting `CLASSIFIER_IMPL` (default: `submitter_filename`).

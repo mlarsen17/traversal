@@ -1,0 +1,12 @@
+{
+  "file_type": "pharmacy",
+  "layout_version": "v1",
+  "schema_json": {
+    "columns": ["member_id", "rx_number", "fill_date", "paid_amount"]
+  },
+  "parser_config_json": {
+    "format": "csv",
+    "delimiter": ",",
+    "header": true
+  }
+}
