@@ -16,7 +16,7 @@ A production-oriented local foundation for a health data ingestion platform, usi
 - A **non-Docker dev mode** for Codex/runtime environments that do not have Docker:
   - Dagster local filesystem storage
   - SQLite metadata DB
-  - local folder-backed object store
+  - standalone local MinIO server (binary) for S3-compatible object storage
 
 ## Architecture
 
@@ -28,7 +28,7 @@ This setup uses **two Postgres containers** for clarity:
 ## Prerequisites
 
 - Docker Engine + Docker Compose plugin (for containerized mode)
-- Python 3.11 (for non-Docker dev mode)
+- Python 3.11+ (for non-Docker dev mode, including Python 3.12)
 
 ## Docker mode (local/prod-like)
 
@@ -60,15 +60,25 @@ What `dev_up.sh` does:
 
 1. Creates `.venv`
 2. Installs Dagster project dependencies from `services/dagster/pyproject.toml`
-3. Sets dev-mode env vars (`METADATA_DB_URL=sqlite:///...`, `OBJECT_STORE_MODE=local`)
-4. Runs Alembic migrations against SQLite
-5. Starts `dagster dev` on port `3000`
+3. Starts a standalone MinIO server using the local binary (auto-downloads from GitHub releases, with dl.min.io fallback)
+4. Sets dev-mode env vars (`METADATA_DB_URL=sqlite:///...`, S3/MinIO credentials + endpoint)
+5. Creates the `health-raw` bucket if it does not exist
+6. Runs Alembic migrations against SQLite
+7. Starts `dagster dev` on port `3000`
+
+You can override binary download sources if needed:
+
+```bash
+export MINIO_DOWNLOAD_URL="https://github.com/minio/minio/releases/latest/download/minio"
+export MINIO_FALLBACK_DOWNLOAD_URL="https://dl.min.io/server/minio/release/linux-amd64/minio"
+```
 
 Dev-mode local state paths:
 
 - Dagster home/config: `.dagster_home/`
 - SQLite metadata DB: `.local/metadata.db`
-- Object store files: `.local_object_store/health-raw/bootstrap/hello.txt`
+- MinIO data dir: `.local/minio-data/`
+- MinIO server log: `.local/minio.log`
 
 ## Running the hello asset
 
@@ -123,10 +133,21 @@ Docker mode (MinIO console):
 - Navigate to bucket `health-raw`
 - Confirm object `bootstrap/hello.txt`
 
-Dev mode:
+Dev mode (MinIO API):
 
 ```bash
-cat .local_object_store/health-raw/bootstrap/hello.txt
+python - <<'PY'
+import boto3
+client = boto3.client(
+    "s3",
+    endpoint_url="http://127.0.0.1:9000",
+    aws_access_key_id="minioadmin",
+    aws_secret_access_key="minioadmin",
+    region_name="us-east-1",
+)
+obj = client.get_object(Bucket="health-raw", Key="bootstrap/hello.txt")
+print(obj["Body"].read().decode())
+PY
 ```
 
 ## Service list (docker-compose)
