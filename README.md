@@ -80,10 +80,16 @@ docker compose up --build
 ## Running in dev mode (no Docker)
 
 ```bash
-./dev_up.sh
+source ./dev_bootstrap.sh
 ```
 
-`dev_up.sh` starts MinIO, creates the configured bucket, runs migrations, and starts Dagster with the same S3 code path used by docker-compose.
+`dev_bootstrap.sh` starts standalone MinIO (if needed), creates the bucket, exports canonical S3_* vars, and runs migrations.
+
+To start Dagster after bootstrap:
+
+```bash
+./dev_up.sh
+```
 
 ## Triggering parse in Dagster
 
@@ -101,6 +107,13 @@ duckdb -c "SELECT atomic_month, count(*) FROM read_parquet('s3://$S3_BUCKET/silv
 ```bash
 cd services/dagster
 pytest -q
+```
+
+E2E targets:
+
+```bash
+make test-e2e-dev
+make test-e2e-docker
 ```
 
 ## Add a new filename convention

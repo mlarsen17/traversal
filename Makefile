@@ -18,3 +18,11 @@ minio-shell:
 
 dev-up:
 	./dev_up.sh
+
+test-e2e-dev:
+	bash -lc 'source ./dev_bootstrap.sh && cd services/dagster && pytest -q tests/e2e'
+
+test-e2e-docker:
+	docker compose up -d --build
+	docker compose exec -T dagster_webserver pytest -q tests/e2e
+	docker compose down -v
