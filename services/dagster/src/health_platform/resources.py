@@ -1,10 +1,12 @@
 import os
 
 import boto3
+from botocore.config import Config
 from dagster import resource
 from sqlalchemy import create_engine
 
 from health_platform.intake.object_store import S3ObjectStore
+from health_platform.utils.s3 import resolve_s3_settings
 
 
 def _metadata_db_url() -> str:
@@ -19,13 +21,15 @@ def _metadata_db_url() -> str:
 
 
 def _build_s3_client():
-    endpoint_url = os.getenv("S3_ENDPOINT_URL") or None
+    settings = resolve_s3_settings()
     return boto3.client(
         "s3",
-        endpoint_url=endpoint_url,
-        aws_access_key_id=os.getenv("S3_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY"),
-        region_name=os.getenv("S3_REGION", "us-east-1"),
+        endpoint_url=settings.endpoint_url,
+        aws_access_key_id=settings.access_key_id,
+        aws_secret_access_key=settings.secret_access_key,
+        region_name=settings.region,
+        verify=settings.verify_ssl,
+        config=Config(s3={"addressing_style": settings.addressing_style}),
     )
 
 
@@ -40,5 +44,6 @@ def metadata_db_resource(_context):
 
 @resource
 def object_store_resource(_context):
+    settings = resolve_s3_settings()
     client = _build_s3_client()
-    yield S3ObjectStore(client, os.getenv("S3_BUCKET", "health-raw"))
+    yield S3ObjectStore(client, settings.bucket)

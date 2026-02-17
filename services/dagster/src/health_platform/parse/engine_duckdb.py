@@ -10,6 +10,7 @@ import duckdb
 
 from health_platform.intake.constants import SILVER_ROOT
 from health_platform.intake.object_store import ObjectStore
+from health_platform.utils.s3 import resolve_s3_settings
 
 
 @dataclass(frozen=True)
@@ -81,10 +82,11 @@ def _configure_s3(con: duckdb.DuckDBPyConnection) -> bool:
             con.execute("LOAD httpfs")
         except Exception:
             return False
-    con.execute(f"SET s3_region='{os.getenv('S3_REGION', 'us-east-1')}'")
-    con.execute(f"SET s3_access_key_id='{os.getenv('S3_ACCESS_KEY_ID', '')}'")
-    con.execute(f"SET s3_secret_access_key='{os.getenv('S3_SECRET_ACCESS_KEY', '')}'")
-    endpoint = os.getenv("S3_ENDPOINT_URL")
+    s3_settings = resolve_s3_settings()
+    con.execute(f"SET s3_region='{s3_settings.region}'")
+    con.execute(f"SET s3_access_key_id='{s3_settings.access_key_id or ''}'")
+    con.execute(f"SET s3_secret_access_key='{s3_settings.secret_access_key or ''}'")
+    endpoint = s3_settings.endpoint_url
     if endpoint:
         cleaned = endpoint.replace("http://", "").replace("https://", "")
         use_ssl = endpoint.startswith("https://")
@@ -135,7 +137,7 @@ def parse_submission_to_silver(
         )
 
         for idx, file_meta in enumerate(file_rows):
-            s3_path = f"s3://{os.getenv('S3_BUCKET', 'health-raw')}/{file_meta['raw_object_key']}"
+            s3_path = f"s3://{resolve_s3_settings().bucket}/{file_meta['raw_object_key']}"
             if not s3_enabled:
                 staged_path = Path(tempdir) / f"input_{idx}.csv"
                 staged_path.write_bytes(object_store.get_bytes(file_meta["raw_object_key"]))

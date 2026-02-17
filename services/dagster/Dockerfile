@@ -7,12 +7,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /opt/dagster/app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential libpq-dev \
+    && apt-get install -y --no-install-recommends build-essential libpq-dev openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 COPY services/dagster/pyproject.toml /opt/dagster/app/pyproject.toml
 COPY services/dagster/README.md /opt/dagster/app/README.md
 COPY services/dagster/src /opt/dagster/app/src
+COPY services/dagster/tests /opt/dagster/app/tests
 COPY services/dagster/dagster.yaml /opt/dagster/app/dagster.yaml
 COPY services/dagster/workspace.yaml /opt/dagster/app/workspace.yaml
 
