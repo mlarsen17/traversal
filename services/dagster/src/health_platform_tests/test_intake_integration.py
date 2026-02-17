@@ -382,13 +382,13 @@ def test_p1_to_p2_happy_path_medical(env):
     assert f"silver/acme/medical/{submission_id}/parse_report.json" in keys
 
 
-def test_parse_type_coercion_rejects_are_counted(env):
+def test_parse_rows_written_matches_non_rejected_output(env):
     engine, store = env
     csv_payload = (
-        b"Id,START,STOP,PATIENT,CODE,BASE_ENCOUNTER_COST\n"
-        b"enc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,p1,99201,10.5\n"
-        b"enc2,not-a-date,2025-01-01T01:00:00Z,p2,99202,not-a-number\n"
-        b"enc3,still-bad,2025-01-01T01:00:00Z,p3,99203,abc\n"
+        b"Id,START,STOP,PATIENT,CODE\n"
+        b"enc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,p1,99201\n"
+        b"enc2,not-a-date,2025-01-01T01:00:00Z,p2,99202\n"
+        b"enc3,2025-01-03T00:00:00Z,2025-01-03T01:00:00Z,p3,99203\n"
     )
     submission_id = _seed_ready_medical_submission(engine, store, csv_payload)
 
@@ -400,19 +400,52 @@ def test_parse_type_coercion_rejects_are_counted(env):
     assert result.success
 
     with engine.begin() as conn:
-        rows_read, rows_written, rejected = conn.execute(
-            text("SELECT rows_read, rows_written, rows_rejected FROM parse_file_metrics")
-        ).one()
-        start_null_count, invalid_start = conn.execute(
+        rows_read, rows_written, rows_rejected, report_object_key = conn.execute(
             text(
-                "SELECT null_count, invalid_count FROM parse_column_metrics WHERE column_name='START'"
+                """
+                SELECT pfm.rows_read, pfm.rows_written, pfm.rows_rejected, pr.report_object_key
+                FROM parse_file_metrics pfm
+                JOIN parse_run pr ON pr.parse_run_id = pfm.parse_run_id
+                """
             )
         ).one()
 
-    assert rows_written == rows_read - rejected
-    assert rejected > 0
-    assert invalid_start > 0
-    assert start_null_count > 0
+    report = json.loads(store.get_bytes(report_object_key))
+    output_rows = sum(report["output_partition_counts"].values())
+
+    assert rows_read == 3
+    assert rows_rejected == 1
+    assert rows_written == 2
+    assert rows_written == rows_read - rows_rejected
+    assert output_rows == rows_written
+
+
+def test_parse_column_metrics_persist_real_null_and_invalid_counts(env):
+    engine, store = env
+    csv_payload = (
+        b"Id,START,STOP,PATIENT,CODE\n"
+        b"enc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,p1,99201\n"
+        b"enc2,2025-01-02T00:00:00Z,,p2,99202\n"
+        b"enc3,2025-01-03T00:00:00Z,bad-date,p3,99203\n"
+    )
+    submission_id = _seed_ready_medical_submission(engine, store, csv_payload)
+
+    result = _execute_parse(
+        {"ops": {"parse_submission_op": {"config": {"submission_id": submission_id}}}},
+        engine,
+        store,
+    )
+    assert result.success
+
+    with engine.begin() as conn:
+        stop_null_count, stop_invalid_count = conn.execute(
+            text(
+                "SELECT null_count, invalid_count FROM parse_column_metrics WHERE column_name='STOP'"
+            )
+        ).one()
+
+    assert stop_null_count > 0
+    assert stop_invalid_count > 0
 
 
 def test_parse_unknown_layout_fails_cleanly(env):
