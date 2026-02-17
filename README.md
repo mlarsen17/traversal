@@ -1,6 +1,32 @@
-# Health Data Ingestion Platform - Phase 1.1 Hardening
+# Health Data Ingestion Platform - Phase 2 Parse to Silver
 
-This repository includes Dagster orchestration, Postgres metadata tracking, MinIO-backed object storage, Alembic migrations, and integration tests for intake registration.
+This repository includes Dagster orchestration, Postgres metadata tracking, MinIO-backed S3-compatible object storage, Alembic migrations, and integration tests for intake registration and parsing to silver Parquet.
+
+## Pipeline state machine
+
+- Intake: `RECEIVED` → `READY_FOR_PARSE` (or `NEEDS_REVIEW` for unknown classifications)
+- Parse (P2): `READY_FOR_PARSE` → `PARSED` on success, `PARSE_FAILED` on hard failures (missing files/layout, parser exceptions)
+
+## Storage conventions
+
+Raw:
+
+- `raw/{submitter_id}/{file_type}/{submission_id}/data/*`
+- `raw/{submitter_id}/{file_type}/{submission_id}/manifest.generated.json`
+
+Silver:
+
+- `silver/{submitter_id}/{file_type}/{submission_id}/atomic_month=YYYY-MM/part-*.parquet`
+- `silver/{submitter_id}/{file_type}/{submission_id}/atomic_month=__unknown__/part-*.parquet` (fallback when anchor date is absent/unparseable)
+- `silver/{submitter_id}/{file_type}/{submission_id}/parse_report.json`
+
+Parser output also appends lineage columns in Parquet:
+
+- `submission_id`
+- `source_object_key`
+- `ingested_at`
+- `layout_id`
+- `layout_version`
 
 ## Intake behavior
 
@@ -19,14 +45,21 @@ Grouping closes using:
 1. **Marker-based**: `_SUCCESS` closes the folder immediately.
 2. **Quiescence-based**: `now - last_changed_at >= INTAKE_QUIESCENCE_MINUTES` (default `10`).
 
-Closed groups are moved to immutable raw storage:
+Closed groups are moved to immutable raw storage and registered in metadata DB.
 
-- `raw/{submitter_id}/{file_type}/{submission_id}/data/{original_filename}`
-- `raw/{submitter_id}/{file_type}/{submission_id}/manifest.generated.json`
+## Parse engine (DuckDB)
 
-Unknown classification is marked `NEEDS_REVIEW`.
+P2 uses a DuckDB-first parser engine (swappable later):
 
-## Object storage configuration (MinIO-only in dev/test)
+- Loads layout contracts from `layout_registry` (`schema_json`, `parser_config_json`)
+- Applies coercion-safe typing casts
+- Counts invalid casts and row rejects without failing the whole submission
+- Computes `atomic_month` from `anchor_date_column` for partitioned silver writes
+- Writes parse metrics to metadata tables (`parse_run`, `parse_file_metrics`, `parse_column_metrics`)
+
+For environments where DuckDB `httpfs` is not available, parsing falls back to local staging reads while preserving the same output contract.
+
+## Object storage configuration (S3-compatible only)
 
 All runtime object operations use a unified S3-compatible API:
 
@@ -52,9 +85,21 @@ docker compose up --build
 
 `dev_up.sh` starts MinIO, creates the configured bucket, runs migrations, and starts Dagster with the same S3 code path used by docker-compose.
 
+## Triggering parse in Dagster
+
+- `ready_for_parse_sensor` scans for `submission.status = READY_FOR_PARSE` and emits deduplicated run keys.
+- `parse_submission_job` parses one submission run (or can be manually launched with `ops.parse_submission_op.config.submission_id`).
+
+## Inspecting silver Parquet with DuckDB CLI
+
+```bash
+duckdb -c "SELECT atomic_month, count(*) FROM read_parquet('s3://$S3_BUCKET/silver/acme/medical/<submission_id>/atomic_month=*/**/*.parquet') GROUP BY 1"
+```
+
 ## Tests
 
 ```bash
+cd services/dagster
 pytest -q
 ```
 
