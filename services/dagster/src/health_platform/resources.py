@@ -44,5 +44,6 @@ def metadata_db_resource(_context):
 
 @resource
 def object_store_resource(_context):
+    settings = resolve_s3_settings()
     client = _build_s3_client()
-    yield S3ObjectStore(client, resolve_s3_settings().bucket)
+    yield S3ObjectStore(client, settings.bucket)

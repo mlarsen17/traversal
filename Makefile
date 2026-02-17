@@ -23,6 +23,4 @@ test-e2e-dev:
 	bash -lc 'source ./dev_bootstrap.sh && cd services/dagster && pytest -q tests/e2e'
 
 test-e2e-docker:
-	docker compose up -d --build
-	docker compose exec -T dagster_webserver pytest -q tests/e2e
-	docker compose down -v
+	bash -lc 'set -e; trap "docker compose down -v" EXIT; docker compose up -d --build; docker compose exec -T dagster_webserver pytest -q tests/e2e'
