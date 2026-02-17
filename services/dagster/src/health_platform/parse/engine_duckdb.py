@@ -153,30 +153,23 @@ def parse_submission_to_silver(
             select_exprs = []
             invalid_row_terms = []
             raw_cols = {row[1] for row in con.execute("PRAGMA table_info(raw_input)").fetchall()}
-            raw_row_count = con.execute("SELECT COUNT(*) FROM raw_input").fetchone()[0]
+            invalid_counts_by_column: dict[str, int] = {}
             for col in columns:
                 if col["name"] in raw_cols:
                     expr = _typed_expr(col["name"], col["type"], date_formats)
                     col_name = _safe_name(col["name"])
                     invalid = f"CASE WHEN NULLIF(TRIM(CAST({col_name} AS VARCHAR)), '') IS NOT NULL AND {expr} IS NULL THEN 1 ELSE 0 END"
                     invalid_row_terms.append(invalid)
-                    null_count, invalid_count = con.execute(
-                        f"SELECT SUM(CASE WHEN {expr} IS NULL THEN 1 ELSE 0 END), SUM({invalid}) FROM raw_input"
-                    ).fetchone()
+                    invalid_count = con.execute(
+                        f"SELECT SUM({invalid}) FROM raw_input"
+                    ).fetchone()[0]
                 else:
                     expr = "NULL"
-                    null_count = raw_row_count
                     invalid_count = 0
 
                 col_name = _safe_name(col["name"])
                 select_exprs.append(f"{expr} AS {col_name}")
-                existing = all_col_metrics.get(col["name"])
-                all_col_metrics[col["name"]] = ParseColumnMetric(
-                    column_name=col["name"],
-                    null_count=(existing.null_count if existing else 0) + int(null_count or 0),
-                    invalid_count=(existing.invalid_count if existing else 0)
-                    + int(invalid_count or 0),
-                )
+                invalid_counts_by_column[col["name"]] = int(invalid_count or 0)
 
             anchor_expr = "'__unknown__'"
             if anchor_col and anchor_col in raw_cols:
@@ -203,10 +196,31 @@ def parse_submission_to_silver(
                 FROM raw_input
                 """
             )
+
+            for col in columns:
+                col_name = _safe_name(col["name"])
+                null_count = con.execute(
+                    f"""
+                    SELECT
+                        SUM(CASE WHEN {col_name} IS NULL THEN 1 ELSE 0 END)
+                    FROM parsed_file
+                    WHERE NOT _row_rejected
+                    """
+                ).fetchone()[0]
+                existing = all_col_metrics.get(col["name"])
+                all_col_metrics[col["name"]] = ParseColumnMetric(
+                    column_name=col["name"],
+                    null_count=(existing.null_count if existing else 0) + int(null_count or 0),
+                    invalid_count=(existing.invalid_count if existing else 0)
+                    + int(invalid_counts_by_column[col["name"]] or 0),
+                )
+
             rows_read, rows_rejected = con.execute(
                 "SELECT COUNT(*), SUM(CASE WHEN _row_rejected THEN 1 ELSE 0 END) FROM parsed_file"
             ).fetchone()
-            rows_written = max(int(rows_read or 0) - int(rows_rejected or 0), 0)
+            rows_written = con.execute(
+                "SELECT COUNT(*) FROM parsed_file WHERE NOT _row_rejected"
+            ).fetchone()[0]
             con.execute(
                 "INSERT INTO parsed_union SELECT * FROM parsed_file"
                 if idx
@@ -220,16 +234,16 @@ def parse_submission_to_silver(
         con.execute(
             f"""
             COPY (
-              SELECT * EXCLUDE (_row_rejected) FROM parsed_union
+              SELECT * EXCLUDE (_row_rejected) FROM parsed_union WHERE NOT _row_rejected
             ) TO '{out_dir.as_posix()}' (FORMAT PARQUET, PARTITION_BY (atomic_month))
             """
         )
 
         unknown_count = con.execute(
-            "SELECT COUNT(*) FROM parsed_union WHERE atomic_month = '__unknown__'"
+            "SELECT COUNT(*) FROM parsed_union WHERE atomic_month = '__unknown__' AND NOT _row_rejected"
         ).fetchone()[0]
         part_rows = con.execute(
-            "SELECT atomic_month, COUNT(*) FROM parsed_union GROUP BY atomic_month"
+            "SELECT atomic_month, COUNT(*) FROM parsed_union WHERE NOT _row_rejected GROUP BY atomic_month"
         ).fetchall()
         partition_counts = {str(month): int(count) for month, count in part_rows}
         if unknown_count:
