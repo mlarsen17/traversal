@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import boto3
 import pytest
@@ -10,7 +12,7 @@ from dagster import build_asset_context, build_sensor_context
 from moto.server import ThreadedMotoServer
 from sqlalchemy import create_engine, text
 
-from health_platform.assets.layout_assets import sync_layout_registry
+from health_platform.assets.layout_assets import LAYOUT_ROOT, sync_layout_registry
 from health_platform.intake.filename_conventions import (
     FilenameConvention,
     ParsedFilename,
@@ -325,6 +327,14 @@ def test_layout_registry_sync(env):
     }
 
 
+def test_layout_files_are_valid_json():
+    for layout_file in sorted(Path(LAYOUT_ROOT).glob("*/*.json")):
+        payload = json.loads(layout_file.read_text())
+        assert "schema" in payload
+        assert "parser_config" in payload
+        assert isinstance(payload["schema"].get("columns"), list)
+
+
 def _seed_ready_medical_submission(
     engine, store, csv_payload: bytes, object_name: str = "medical_202501_202503.csv"
 ):
@@ -390,14 +400,19 @@ def test_parse_type_coercion_rejects_are_counted(env):
     assert result.success
 
     with engine.begin() as conn:
-        rejected = conn.execute(
-            text("SELECT SUM(rows_rejected) FROM parse_file_metrics")
-        ).scalar_one()
-        invalid_start = conn.execute(
-            text("SELECT invalid_count FROM parse_column_metrics WHERE column_name='START'")
-        ).scalar_one()
+        rows_read, rows_written, rejected = conn.execute(
+            text("SELECT rows_read, rows_written, rows_rejected FROM parse_file_metrics")
+        ).one()
+        start_null_count, invalid_start = conn.execute(
+            text(
+                "SELECT null_count, invalid_count FROM parse_column_metrics WHERE column_name='START'"
+            )
+        ).one()
+
+    assert rows_written == rows_read - rejected
     assert rejected > 0
     assert invalid_start > 0
+    assert start_null_count > 0
 
 
 def test_parse_unknown_layout_fails_cleanly(env):

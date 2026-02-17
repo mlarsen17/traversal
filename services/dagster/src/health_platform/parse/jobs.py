@@ -156,7 +156,7 @@ def parse_submission_op(context) -> str:
                     },
                 )
 
-            for column_name, invalid_count in report.invalid_counts_by_column.items():
+            for column_metric in report.column_metrics.values():
                 conn.execute(
                     text(
                         """
@@ -166,9 +166,9 @@ def parse_submission_op(context) -> str:
                     ),
                     {
                         "parse_run_id": parse_run_id,
-                        "column_name": column_name,
-                        "null_count": 0,
-                        "invalid_count": invalid_count,
+                        "column_name": column_metric.column_name,
+                        "null_count": column_metric.null_count,
+                        "invalid_count": column_metric.invalid_count,
                     },
                 )
 

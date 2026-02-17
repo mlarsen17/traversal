@@ -38,6 +38,7 @@ class ParseReport:
     ended_at: str
     files: list[ParseFileMetric]
     invalid_counts_by_column: dict[str, int]
+    column_metrics: dict[str, ParseColumnMetric]
     output_partition_counts: dict[str, int]
     warnings: list[str]
     unparseable_anchor_dates: int
@@ -205,7 +206,7 @@ def parse_submission_to_silver(
             rows_read, rows_rejected = con.execute(
                 "SELECT COUNT(*), SUM(CASE WHEN _row_rejected THEN 1 ELSE 0 END) FROM parsed_file"
             ).fetchone()
-            rows_written = int(rows_read or 0)
+            rows_written = max(int(rows_read or 0) - int(rows_rejected or 0), 0)
             con.execute(
                 "INSERT INTO parsed_union SELECT * FROM parsed_file"
                 if idx
@@ -251,6 +252,7 @@ def parse_submission_to_silver(
         ended_at=ended.isoformat(),
         files=[ParseFileMetric(**item) for item in file_rows],
         invalid_counts_by_column={k: v.invalid_count for k, v in all_col_metrics.items()},
+        column_metrics=all_col_metrics,
         output_partition_counts=partition_counts,
         warnings=warnings,
         unparseable_anchor_dates=int(partition_counts.get("__unknown__", 0)),
