@@ -1,7 +1,29 @@
 from dagster import Field, OpExecutionContext, Out, graph, op
 
 from health_platform.intake.filename_conventions import default_registry
-from health_platform.intake.processing import GroupCandidate, process_group
+from health_platform.intake.processing import (
+    GroupCandidate,
+    discover_inbox_objects,
+    process_group,
+)
+
+
+@op(required_resource_keys={"metadata_db", "object_store"}, out=Out(int))
+def discover_inbox_objects_op(context: OpExecutionContext) -> int:
+    discovered = discover_inbox_objects(
+        context.resources.metadata_db,
+        context.resources.object_store,
+    )
+    context.log.info("Discovered/updated %s inbox objects", discovered)
+    return discovered
+
+
+@graph
+def discover_inbox_objects_graph():
+    discover_inbox_objects_op()
+
+
+discover_inbox_objects_job = discover_inbox_objects_graph.to_job(name="discover_inbox_objects_job")
 
 
 @op(

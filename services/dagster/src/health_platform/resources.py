@@ -19,14 +19,13 @@ def _metadata_db_url() -> str:
 
 
 def _build_s3_client():
-    secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
-    scheme = "https" if secure else "http"
+    endpoint_url = os.getenv("S3_ENDPOINT_URL") or None
     return boto3.client(
         "s3",
-        endpoint_url=f"{scheme}://{os.getenv('MINIO_ENDPOINT')}",
-        aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-        aws_secret_access_key=os.getenv("MINIO_SECRET_KEY"),
-        region_name=os.getenv("MINIO_REGION", "us-east-1"),
+        endpoint_url=endpoint_url,
+        aws_access_key_id=os.getenv("S3_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY"),
+        region_name=os.getenv("S3_REGION", "us-east-1"),
     )
 
 
@@ -40,11 +39,6 @@ def metadata_db_resource(_context):
 
 
 @resource
-def minio_resource(_context):
-    yield _build_s3_client()
-
-
-@resource
 def object_store_resource(_context):
     client = _build_s3_client()
-    yield S3ObjectStore(client, os.getenv("RAW_BUCKET_NAME", "health-raw"))
+    yield S3ObjectStore(client, os.getenv("S3_BUCKET", "health-raw"))

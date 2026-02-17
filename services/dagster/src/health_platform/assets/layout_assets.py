@@ -17,7 +17,9 @@ def sync_layout_registry(context) -> MaterializeResult:
         for path in sorted(LAYOUT_ROOT.glob("*/*.json")):
             payload = json.loads(path.read_text())
             row = conn.execute(
-                text("SELECT layout_id FROM layout_registry WHERE file_type=:file_type AND layout_version=:layout_version"),
+                text(
+                    "SELECT layout_id FROM layout_registry WHERE file_type=:file_type AND layout_version=:layout_version"
+                ),
                 {"file_type": payload["file_type"], "layout_version": payload["layout_version"]},
             ).fetchone()
             if row:
