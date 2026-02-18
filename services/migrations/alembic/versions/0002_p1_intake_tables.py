@@ -42,7 +42,12 @@ def upgrade() -> None:
         sa.Column("submitter_id", sa.Text(), nullable=False),
         sa.Column("state", sa.Text(), nullable=True),
         sa.Column("file_type", sa.Text(), nullable=False),
-        sa.Column("layout_id", sa.Text(), sa.ForeignKey("layout_registry.layout_id"), nullable=True),
+        sa.Column(
+            "layout_id",
+            sa.Text(),
+            sa.ForeignKey("layout_registry.layout_id"),
+            nullable=True,
+        ),
         sa.Column("coverage_start_month", sa.Text(), nullable=True),
         sa.Column("coverage_end_month", sa.Text(), nullable=True),
         sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
@@ -63,8 +68,19 @@ def upgrade() -> None:
 
     op.create_table(
         "submission_file",
-        sa.Column("submission_file_id", sa.Integer(), primary_key=True, autoincrement=True, nullable=False),
-        sa.Column("submission_id", sa.Text(), sa.ForeignKey("submission.submission_id"), nullable=False),
+        sa.Column(
+            "submission_file_id",
+            sa.Integer(),
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        sa.Column(
+            "submission_id",
+            sa.Text(),
+            sa.ForeignKey("submission.submission_id"),
+            nullable=False,
+        ),
         sa.Column("object_key", sa.Text(), nullable=False),
         sa.Column("bytes", sa.BigInteger(), nullable=False),
         sa.Column("etag", sa.Text(), nullable=True),

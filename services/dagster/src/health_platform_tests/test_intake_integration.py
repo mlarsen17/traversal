@@ -23,6 +23,8 @@ from health_platform.intake.object_store import S3ObjectStore
 from health_platform.intake.processing import discover_inbox_objects
 from health_platform.intake.sensors import inbox_discovery_sensor, inbox_grouping_sensor
 from health_platform.parse.jobs import parse_submission_job
+from health_platform.validation.jobs import validate_submission_job
+from health_platform.validation.sensors import ready_for_validate_sensor
 
 
 @pytest.fixture()
@@ -67,7 +69,8 @@ def env(tmp_path, monkeypatch):
                 raw_prefix TEXT NOT NULL,
                 manifest_object_key TEXT NOT NULL,
                 manifest_sha256 TEXT NOT NULL,
-                group_fingerprint TEXT
+                group_fingerprint TEXT,
+                latest_validation_run_id TEXT
             )
             """
         )
@@ -145,6 +148,91 @@ def env(tmp_path, monkeypatch):
             )
             """
         )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE validation_rule (
+                rule_id TEXT PRIMARY KEY,
+                file_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                rule_kind TEXT NOT NULL,
+                default_severity TEXT NOT NULL,
+                default_threshold_type TEXT NOT NULL,
+                default_threshold_value DOUBLE NOT NULL,
+                definition_json TEXT NOT NULL,
+                sql_template TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE validation_rule_set (
+                rule_set_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                layout_version TEXT,
+                effective_start DATE,
+                effective_end DATE,
+                status TEXT NOT NULL,
+                created_by TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE validation_rule_set_rule (
+                rule_set_id TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL,
+                severity_override TEXT,
+                threshold_type_override TEXT,
+                threshold_value_override DOUBLE,
+                params_override_json TEXT,
+                PRIMARY KEY (rule_set_id, rule_id)
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE validation_run (
+                validation_run_id TEXT PRIMARY KEY,
+                submission_id TEXT NOT NULL,
+                rule_set_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                status TEXT NOT NULL,
+                outcome TEXT,
+                engine TEXT NOT NULL,
+                engine_version TEXT,
+                silver_prefix TEXT NOT NULL,
+                total_rows BIGINT,
+                report_object_key TEXT,
+                error_message TEXT
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX ix_validation_run_submission ON validation_run(submission_id)"
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE validation_finding (
+                validation_finding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                validation_run_id TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                scope_month TEXT,
+                violations_count BIGINT NOT NULL,
+                denominator_count BIGINT NOT NULL,
+                violations_rate DOUBLE,
+                sample_object_key TEXT,
+                passed BOOLEAN NOT NULL,
+                computed_at TEXT NOT NULL
+            )
+            """
+        )
 
     server = ThreadedMotoServer(port=0)
     server.start()
@@ -204,6 +292,95 @@ def _execute_parse(run_config, engine, store):
         raise_on_error=False,
     )
     return result
+
+
+def _run_validate_sensor(engine, store):
+    ctx = build_sensor_context(resources={"metadata_db": engine, "object_store": store})
+    return list(ready_for_validate_sensor(ctx))
+
+
+def _execute_validate(run_config, engine, store):
+    result = validate_submission_job.execute_in_process(
+        run_config=run_config,
+        resources={"metadata_db": engine, "object_store": store},
+        raise_on_error=False,
+    )
+    return result
+
+
+def _seed_validation_ruleset(
+    engine,
+    *,
+    file_type="medical",
+    layout_version=None,
+    rules=None,
+    name=None,
+):
+    rule_set_id = str(uuid.uuid4())
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO validation_rule_set(
+                    rule_set_id, name, file_type, layout_version, effective_start, effective_end, status, created_by, created_at
+                ) VALUES (
+                    :rule_set_id, :name, :file_type, :layout_version, NULL, NULL, 'ACTIVE', 'test', :created_at
+                )
+                """
+            ),
+            {
+                "rule_set_id": rule_set_id,
+                "name": name or f"test-{rule_set_id}",
+                "file_type": file_type,
+                "layout_version": layout_version,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        for idx, rule in enumerate(rules or []):
+            rule_id = str(uuid.uuid4())
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO validation_rule(
+                        rule_id, file_type, name, description, rule_kind, default_severity,
+                        default_threshold_type, default_threshold_value, definition_json, sql_template, created_at, updated_at
+                    ) VALUES (
+                        :rule_id, :file_type, :name, :description, :rule_kind, :default_severity,
+                        :default_threshold_type, :default_threshold_value, :definition_json, :sql_template, :created_at, :updated_at
+                    )
+                    """
+                ),
+                {
+                    "rule_id": rule_id,
+                    "file_type": file_type,
+                    "name": rule.get("name", f"rule-{idx}"),
+                    "description": rule.get("description"),
+                    "rule_kind": rule["rule_kind"],
+                    "default_severity": rule.get("severity", "HARD"),
+                    "default_threshold_type": rule.get("threshold_type", "COUNT"),
+                    "default_threshold_value": rule.get("threshold_value", 0),
+                    "definition_json": json.dumps(rule.get("definition", {})),
+                    "sql_template": rule.get("sql_template"),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO validation_rule_set_rule(
+                        rule_set_id, rule_id, enabled, severity_override, threshold_type_override,
+                        threshold_value_override, params_override_json
+                    ) VALUES (
+                        :rule_set_id, :rule_id, 1, NULL, NULL, NULL, NULL
+                    )
+                    """
+                ),
+                {"rule_set_id": rule_set_id, "rule_id": rule_id},
+            )
+
+    return rule_set_id
 
 
 def test_marker_ingestion_happy_path(env):
@@ -477,3 +654,222 @@ def test_parse_unknown_layout_fails_cleanly(env):
             {"submission_id": submission_id},
         ).scalar_one()
     assert status == "PARSE_FAILED"
+
+
+def _parse_medical_submission(engine, store, csv_payload: bytes) -> str:
+    submission_id = _seed_ready_medical_submission(engine, store, csv_payload)
+    parse_result = _execute_parse(
+        {"ops": {"parse_submission_op": {"config": {"submission_id": submission_id}}}},
+        engine,
+        store,
+    )
+    assert parse_result.success
+    return submission_id
+
+
+def test_validation_hard_fail_blocks_submission(env):
+    engine, store = env
+    submission_id = _parse_medical_submission(
+        engine,
+        store,
+        (
+            b"Id,START,STOP,PATIENT,CODE\n"
+            b"enc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,p1,99201\n"
+            b"enc2,2025-01-02T00:00:00Z,2025-01-02T01:00:00Z,,99202\n"
+        ),
+    )
+
+    _seed_validation_ruleset(
+        engine,
+        layout_version="v1",
+        rules=[
+            {
+                "name": "patient_required",
+                "rule_kind": "NOT_NULL",
+                "severity": "HARD",
+                "threshold_type": "COUNT",
+                "threshold_value": 0,
+                "definition": {"column": "PATIENT"},
+            }
+        ],
+    )
+
+    result = _execute_validate(
+        {"ops": {"validate_submission_op": {"config": {"submission_id": submission_id}}}},
+        engine,
+        store,
+    )
+    assert result.success
+
+    with engine.begin() as conn:
+        status, latest_validation_run_id = conn.execute(
+            text(
+                "SELECT status, latest_validation_run_id FROM submission WHERE submission_id=:submission_id"
+            ),
+            {"submission_id": submission_id},
+        ).one()
+        run = conn.execute(
+            text(
+                "SELECT status, outcome FROM validation_run WHERE validation_run_id=:validation_run_id"
+            ),
+            {"validation_run_id": latest_validation_run_id},
+        ).one()
+        finding_passed = conn.execute(
+            text(
+                "SELECT passed FROM validation_finding WHERE validation_run_id=:validation_run_id"
+            ),
+            {"validation_run_id": latest_validation_run_id},
+        ).scalar_one()
+
+    assert status == "VALIDATION_FAILED"
+    assert run.status == "SUCCEEDED"
+    assert run.outcome == "FAIL_HARD"
+    assert finding_passed == 0
+
+
+def test_validation_soft_fail_yields_warnings(env):
+    engine, store = env
+    submission_id = _parse_medical_submission(
+        engine,
+        store,
+        (
+            b"Id,START,STOP,PATIENT,CODE\n"
+            b"enc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,p1,200000\n"
+            b"enc2,2025-01-02T00:00:00Z,2025-01-02T01:00:00Z,p2,99202\n"
+        ),
+    )
+
+    _seed_validation_ruleset(
+        engine,
+        layout_version="v1",
+        rules=[
+            {
+                "name": "code_range_soft",
+                "rule_kind": "RANGE",
+                "severity": "SOFT",
+                "threshold_type": "RATE",
+                "threshold_value": 0.01,
+                "definition": {"column": "CODE", "min": 0, "max": 100000},
+            }
+        ],
+    )
+
+    result = _execute_validate(
+        {"ops": {"validate_submission_op": {"config": {"submission_id": submission_id}}}},
+        engine,
+        store,
+    )
+    assert result.success
+
+    with engine.begin() as conn:
+        status = conn.execute(
+            text("SELECT status FROM submission WHERE submission_id=:submission_id"),
+            {"submission_id": submission_id},
+        ).scalar_one()
+        outcome = conn.execute(
+            text("SELECT outcome FROM validation_run WHERE submission_id=:submission_id"),
+            {"submission_id": submission_id},
+        ).scalar_one()
+
+    assert status == "VALIDATED_WITH_WARNINGS"
+    assert outcome == "PASS_WITH_WARNINGS"
+
+
+def test_validation_sample_artifact_written(env):
+    engine, store = env
+    submission_id = _parse_medical_submission(
+        engine,
+        store,
+        (b"Id,START,STOP,PATIENT,CODE\nenc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,,99201\n"),
+    )
+    _seed_validation_ruleset(
+        engine,
+        layout_version="v1",
+        rules=[
+            {
+                "name": "patient_required",
+                "rule_kind": "NOT_NULL",
+                "severity": "HARD",
+                "threshold_type": "COUNT",
+                "threshold_value": 0,
+                "definition": {"column": "PATIENT"},
+            }
+        ],
+    )
+
+    result = _execute_validate(
+        {"ops": {"validate_submission_op": {"config": {"submission_id": submission_id}}}},
+        engine,
+        store,
+    )
+    assert result.success
+
+    with engine.begin() as conn:
+        sample_key = conn.execute(
+            text(
+                """
+                SELECT vf.sample_object_key
+                FROM validation_finding vf
+                JOIN validation_run vr ON vr.validation_run_id = vf.validation_run_id
+                WHERE vr.submission_id=:submission_id
+                """
+            ),
+            {"submission_id": submission_id},
+        ).scalar_one()
+
+    assert sample_key
+    assert store.stat_object(sample_key) is not None
+    assert len(store.get_bytes(sample_key)) > 0
+
+
+def test_validation_rule_set_selection_prefers_layout_specific(env):
+    engine, store = env
+    submission_id = _parse_medical_submission(
+        engine,
+        store,
+        b"Id,START,STOP,PATIENT,CODE\nenc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,p1,99201\n",
+    )
+
+    _seed_validation_ruleset(
+        engine,
+        layout_version=None,
+        name="default",
+        rules=[
+            {
+                "name": "default_not_null",
+                "rule_kind": "NOT_NULL",
+                "severity": "HARD",
+                "threshold_type": "COUNT",
+                "threshold_value": 0,
+                "definition": {"column": "PATIENT"},
+            }
+        ],
+    )
+    preferred_rule_set = _seed_validation_ruleset(
+        engine,
+        layout_version="v1",
+        name="layout-v1",
+        rules=[
+            {
+                "name": "layout_not_null",
+                "rule_kind": "NOT_NULL",
+                "severity": "HARD",
+                "threshold_type": "COUNT",
+                "threshold_value": 0,
+                "definition": {"column": "PATIENT"},
+            }
+        ],
+    )
+
+    requests = _run_validate_sensor(engine, store)
+    assert requests
+    result = _execute_validate(requests[0].run_config, engine, store)
+    assert result.success
+
+    with engine.begin() as conn:
+        used_rule_set = conn.execute(
+            text("SELECT rule_set_id FROM validation_run WHERE submission_id=:submission_id"),
+            {"submission_id": submission_id},
+        ).scalar_one()
+
+    assert used_rule_set == preferred_rule_set

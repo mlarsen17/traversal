@@ -20,7 +20,9 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.create_table(
         "bootstrap_heartbeat",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, nullable=False),
+        sa.Column(
+            "id", sa.Integer(), primary_key=True, autoincrement=True, nullable=False
+        ),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("message", sa.Text(), nullable=False),
     )
