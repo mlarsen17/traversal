@@ -162,9 +162,7 @@ def resolve_rule_set(metadata_db, submission) -> str:
         ):
             tiers[3].append(row.rule_set_id)
         elif (
-            row.layout_version is None
-            and row.effective_start is None
-            and row.effective_end is None
+            row.layout_version is None and row.effective_start is None and row.effective_end is None
         ):
             tiers[4].append(row.rule_set_id)
 
@@ -231,24 +229,40 @@ def compile_rule_to_queries(rule: ResolvedRule) -> tuple[str, str]:
     if kind == "NOT_NULL":
         col = rule.params["column"]
         where = f'"{col}" IS NULL'
-        return f"SELECT count(*) AS violations FROM silver WHERE {where}", f"SELECT * FROM silver WHERE {where} LIMIT 100"
+        return (
+            f"SELECT count(*) AS violations FROM silver WHERE {where}",
+            f"SELECT * FROM silver WHERE {where} LIMIT 100",
+        )
     if kind == "RANGE":
         col = rule.params["column"]
         min_v = float(rule.params["min"])
         max_v = float(rule.params["max"])
         numeric_col = f'TRY_CAST("{col}" AS DOUBLE)'
-        where = f'{numeric_col} IS NOT NULL AND ({numeric_col} < {min_v} OR {numeric_col} > {max_v})'
-        return f"SELECT count(*) AS violations FROM silver WHERE {where}", f"SELECT * FROM silver WHERE {where} LIMIT 100"
+        where = (
+            f"{numeric_col} IS NOT NULL AND ({numeric_col} < {min_v} OR {numeric_col} > {max_v})"
+        )
+        return (
+            f"SELECT count(*) AS violations FROM silver WHERE {where}",
+            f"SELECT * FROM silver WHERE {where} LIMIT 100",
+        )
     if kind == "ALLOWED_VALUES":
         col = rule.params["column"]
-        quoted = ", ".join([f"'{str(v).replace(chr(39), chr(39) * 2)}'" for v in rule.params["values"]])
+        quoted = ", ".join(
+            [f"'{str(v).replace(chr(39), chr(39) * 2)}'" for v in rule.params["values"]]
+        )
         where = f'"{col}" IS NOT NULL AND "{col}" NOT IN ({quoted})'
-        return f"SELECT count(*) AS violations FROM silver WHERE {where}", f"SELECT * FROM silver WHERE {where} LIMIT 100"
+        return (
+            f"SELECT count(*) AS violations FROM silver WHERE {where}",
+            f"SELECT * FROM silver WHERE {where} LIMIT 100",
+        )
     if kind == "REGEX":
         col = rule.params["column"]
         pattern = str(rule.params["pattern"]).replace("'", "''")
         where = f'"{col}" IS NOT NULL AND regexp_matches(CAST("{col}" AS VARCHAR), \'{pattern}\') = FALSE'
-        return f"SELECT count(*) AS violations FROM silver WHERE {where}", f"SELECT * FROM silver WHERE {where} LIMIT 100"
+        return (
+            f"SELECT count(*) AS violations FROM silver WHERE {where}",
+            f"SELECT * FROM silver WHERE {where} LIMIT 100",
+        )
     if kind == "UNIQUE_KEY":
         cols = rule.params["columns"]
         key_group = ", ".join([f'"{c}"' for c in cols])
@@ -274,7 +288,9 @@ def compile_rule_to_queries(rule: ResolvedRule) -> tuple[str, str]:
     raise ValueError(f"Unsupported rule kind: {kind}")
 
 
-def _evaluate_rule(rule: ResolvedRule, violations_count: int, total_rows: int) -> tuple[float, bool]:
+def _evaluate_rule(
+    rule: ResolvedRule, violations_count: int, total_rows: int
+) -> tuple[float, bool]:
     violations_rate = (violations_count / total_rows) if total_rows > 0 else 0.0
     if rule.threshold_type == "COUNT":
         passed = violations_count <= rule.threshold_value
@@ -323,16 +339,16 @@ def run_validation_engine(
     if not rules:
         raise RuntimeError(f"Validation rule set {rule_set_id} has no enabled rules")
 
-    silver_prefix = f"silver/{submission.submitter_id}/{submission.file_type}/{submission.submission_id}"
+    silver_prefix = (
+        f"silver/{submission.submitter_id}/{submission.file_type}/{submission.submission_id}"
+    )
     s3_glob = f"s3://{os.getenv('S3_BUCKET', 'health-raw')}/{silver_prefix}/**/*.parquet"
 
     con = duckdb.connect()
     staged_dir: TemporaryDirectory[str] | None = None
     s3_enabled = _configure_s3(con)
     if s3_enabled:
-        con.execute(
-            f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet('{s3_glob}')"
-        )
+        con.execute(f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet('{s3_glob}')")
     else:
         staged_dir = TemporaryDirectory()
         local_root = Path(staged_dir.name) / "silver"
@@ -375,7 +391,12 @@ def run_validation_engine(
         sample_key = None
         if violations_count > 0:
             sample_key = write_sample_artifact(
-                con, object_store, sample_sql, submission.submission_id, validation_run_id, rule.rule_id
+                con,
+                object_store,
+                sample_sql,
+                submission.submission_id,
+                validation_run_id,
+                rule.rule_id,
             )
             logger.info("Wrote validation sample for rule %s to %s", rule.rule_id, sample_key)
 
@@ -473,7 +494,9 @@ def run_validation_engine(
         "started_at": started_at.isoformat(),
         "ended_at": ended_at.isoformat(),
     }
-    object_store.put_bytes(report_key, json.dumps(report_body, indent=2).encode("utf-8"), "application/json")
+    object_store.put_bytes(
+        report_key, json.dumps(report_body, indent=2).encode("utf-8"), "application/json"
+    )
 
     with metadata_db.begin() as conn:
         for row in finding_rows:

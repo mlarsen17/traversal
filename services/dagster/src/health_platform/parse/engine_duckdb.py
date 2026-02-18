@@ -160,9 +160,9 @@ def parse_submission_to_silver(
                     col_name = _safe_name(col["name"])
                     invalid = f"CASE WHEN NULLIF(TRIM(CAST({col_name} AS VARCHAR)), '') IS NOT NULL AND {expr} IS NULL THEN 1 ELSE 0 END"
                     invalid_row_terms.append(invalid)
-                    invalid_count = con.execute(
-                        f"SELECT SUM({invalid}) FROM raw_input"
-                    ).fetchone()[0]
+                    invalid_count = con.execute(f"SELECT SUM({invalid}) FROM raw_input").fetchone()[
+                        0
+                    ]
                 else:
                     expr = "NULL"
                     invalid_count = 0

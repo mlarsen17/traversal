@@ -35,8 +35,6 @@ def ready_for_validate_sensor(context: SensorEvaluationContext, metadata_db):
         yield RunRequest(
             run_key=f"validate:{digest}",
             run_config={
-                "ops": {
-                    "validate_submission_op": {"config": {"submission_id": row.submission_id}}
-                }
+                "ops": {"validate_submission_op": {"config": {"submission_id": row.submission_id}}}
             },
         )

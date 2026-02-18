@@ -18,11 +18,23 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("inbox_object", sa.Column("last_changed_at", sa.DateTime(timezone=True), nullable=True))
-    op.execute("UPDATE inbox_object SET last_changed_at = last_seen_at WHERE last_changed_at IS NULL")
+    op.add_column(
+        "inbox_object",
+        sa.Column("last_changed_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    op.execute(
+        "UPDATE inbox_object SET last_changed_at = last_seen_at WHERE last_changed_at IS NULL"
+    )
 
-    op.add_column("submission", sa.Column("group_fingerprint", sa.Text(), nullable=True))
-    op.create_index("ux_submission_group_fingerprint", "submission", ["group_fingerprint"], unique=True)
+    op.add_column(
+        "submission", sa.Column("group_fingerprint", sa.Text(), nullable=True)
+    )
+    op.create_index(
+        "ux_submission_group_fingerprint",
+        "submission",
+        ["group_fingerprint"],
+        unique=True,
+    )
 
 
 def downgrade() -> None:

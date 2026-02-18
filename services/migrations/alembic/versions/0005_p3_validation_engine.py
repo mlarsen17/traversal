@@ -17,7 +17,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("submission", sa.Column("latest_validation_run_id", sa.Text(), nullable=True))
+    op.add_column(
+        "submission", sa.Column("latest_validation_run_id", sa.Text(), nullable=True)
+    )
 
     op.create_table(
         "validation_rule",
@@ -50,21 +52,43 @@ def upgrade() -> None:
 
     op.create_table(
         "validation_rule_set_rule",
-        sa.Column("rule_set_id", sa.Text(), sa.ForeignKey("validation_rule_set.rule_set_id"), nullable=False),
-        sa.Column("rule_id", sa.Text(), sa.ForeignKey("validation_rule.rule_id"), nullable=False),
+        sa.Column(
+            "rule_set_id",
+            sa.Text(),
+            sa.ForeignKey("validation_rule_set.rule_set_id"),
+            nullable=False,
+        ),
+        sa.Column(
+            "rule_id",
+            sa.Text(),
+            sa.ForeignKey("validation_rule.rule_id"),
+            nullable=False,
+        ),
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("severity_override", sa.Text(), nullable=True),
         sa.Column("threshold_type_override", sa.Text(), nullable=True),
         sa.Column("threshold_value_override", sa.Float(), nullable=True),
         sa.Column("params_override_json", sa.Text(), nullable=True),
-        sa.PrimaryKeyConstraint("rule_set_id", "rule_id", name="pk_validation_rule_set_rule"),
+        sa.PrimaryKeyConstraint(
+            "rule_set_id", "rule_id", name="pk_validation_rule_set_rule"
+        ),
     )
 
     op.create_table(
         "validation_run",
         sa.Column("validation_run_id", sa.Text(), primary_key=True, nullable=False),
-        sa.Column("submission_id", sa.Text(), sa.ForeignKey("submission.submission_id"), nullable=False),
-        sa.Column("rule_set_id", sa.Text(), sa.ForeignKey("validation_rule_set.rule_set_id"), nullable=False),
+        sa.Column(
+            "submission_id",
+            sa.Text(),
+            sa.ForeignKey("submission.submission_id"),
+            nullable=False,
+        ),
+        sa.Column(
+            "rule_set_id",
+            sa.Text(),
+            sa.ForeignKey("validation_rule_set.rule_set_id"),
+            nullable=False,
+        ),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("status", sa.Text(), nullable=False),
@@ -76,13 +100,34 @@ def upgrade() -> None:
         sa.Column("report_object_key", sa.Text(), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
     )
-    op.create_index("ix_validation_run_submission", "validation_run", ["submission_id"], unique=False)
+    op.create_index(
+        "ix_validation_run_submission",
+        "validation_run",
+        ["submission_id"],
+        unique=False,
+    )
 
     op.create_table(
         "validation_finding",
-        sa.Column("validation_finding_id", sa.Integer(), primary_key=True, autoincrement=True, nullable=False),
-        sa.Column("validation_run_id", sa.Text(), sa.ForeignKey("validation_run.validation_run_id"), nullable=False),
-        sa.Column("rule_id", sa.Text(), sa.ForeignKey("validation_rule.rule_id"), nullable=False),
+        sa.Column(
+            "validation_finding_id",
+            sa.Integer(),
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        sa.Column(
+            "validation_run_id",
+            sa.Text(),
+            sa.ForeignKey("validation_run.validation_run_id"),
+            nullable=False,
+        ),
+        sa.Column(
+            "rule_id",
+            sa.Text(),
+            sa.ForeignKey("validation_rule.rule_id"),
+            nullable=False,
+        ),
         sa.Column("scope_month", sa.Text(), nullable=True),
         sa.Column("violations_count", sa.BigInteger(), nullable=False),
         sa.Column("denominator_count", sa.BigInteger(), nullable=False),
@@ -102,7 +147,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_submission_latest_validation_run", "submission", type_="foreignkey")
+    op.drop_constraint(
+        "fk_submission_latest_validation_run", "submission", type_="foreignkey"
+    )
     op.drop_table("validation_finding")
     op.drop_index("ix_validation_run_submission", table_name="validation_run")
     op.drop_table("validation_run")

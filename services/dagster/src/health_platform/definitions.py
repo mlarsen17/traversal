@@ -15,8 +15,18 @@ from health_platform.validation.sensors import ready_for_validate_sensor
 
 defs = Definitions(
     assets=[bootstrap_heartbeat_asset, sync_layout_registry, seed_validation_rule_sets],
-    jobs=[discover_inbox_objects_job, register_submission_job, parse_submission_job, validate_submission_job],
-    sensors=[inbox_discovery_sensor, inbox_grouping_sensor, ready_for_parse_sensor, ready_for_validate_sensor],
+    jobs=[
+        discover_inbox_objects_job,
+        register_submission_job,
+        parse_submission_job,
+        validate_submission_job,
+    ],
+    sensors=[
+        inbox_discovery_sensor,
+        inbox_grouping_sensor,
+        ready_for_parse_sensor,
+        ready_for_validate_sensor,
+    ],
     resources={
         "metadata_db": metadata_db_resource,
         "object_store": object_store_resource,

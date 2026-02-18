@@ -214,7 +214,9 @@ def env(tmp_path, monkeypatch):
             )
             """
         )
-        conn.exec_driver_sql("CREATE INDEX ix_validation_run_submission ON validation_run(submission_id)")
+        conn.exec_driver_sql(
+            "CREATE INDEX ix_validation_run_submission ON validation_run(submission_id)"
+        )
         conn.exec_driver_sql(
             """
             CREATE TABLE validation_finding (
@@ -290,8 +292,6 @@ def _execute_parse(run_config, engine, store):
         raise_on_error=False,
     )
     return result
-
-
 
 
 def _run_validate_sensor(engine, store):
@@ -381,6 +381,7 @@ def _seed_validation_ruleset(
             )
 
     return rule_set_id
+
 
 def test_marker_ingestion_happy_path(env):
     engine, store = env
@@ -779,10 +780,7 @@ def test_validation_sample_artifact_written(env):
     submission_id = _parse_medical_submission(
         engine,
         store,
-        (
-            b"Id,START,STOP,PATIENT,CODE\n"
-            b"enc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,,99201\n"
-        ),
+        (b"Id,START,STOP,PATIENT,CODE\nenc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,,99201\n"),
     )
     _seed_validation_ruleset(
         engine,
