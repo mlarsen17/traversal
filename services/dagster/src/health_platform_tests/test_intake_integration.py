@@ -296,7 +296,7 @@ def _execute_parse(run_config, engine, store):
 
 def _run_validate_sensor(engine, store):
     ctx = build_sensor_context(resources={"metadata_db": engine, "object_store": store})
-    return list(ready_for_validate_sensor(ctx, metadata_db=engine))
+    return list(ready_for_validate_sensor(ctx))
 
 
 def _execute_validate(run_config, engine, store):

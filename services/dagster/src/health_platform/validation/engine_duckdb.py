@@ -86,12 +86,15 @@ def _validate_custom_sql(sql: str) -> None:
             raise ValueError(f"CUSTOM_SQL contains blocked keyword: {keyword}")
 
 
-def _configure_s3(con: duckdb.DuckDBPyConnection) -> None:
+def _configure_s3(con: duckdb.DuckDBPyConnection) -> bool:
     try:
         con.execute("LOAD httpfs")
     except Exception:
-        con.execute("INSTALL httpfs")
-        con.execute("LOAD httpfs")
+        try:
+            con.execute("INSTALL httpfs")
+            con.execute("LOAD httpfs")
+        except Exception:
+            return False
 
     con.execute(f"SET s3_region='{os.getenv('S3_REGION', 'us-east-1')}'")
     con.execute(f"SET s3_access_key_id='{os.getenv('S3_ACCESS_KEY_ID', '')}'")
@@ -103,6 +106,7 @@ def _configure_s3(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(f"SET s3_endpoint='{cleaned}'")
         con.execute(f"SET s3_use_ssl={'true' if use_ssl else 'false'}")
         con.execute("SET s3_url_style='path'")
+    return True
 
 
 def _month_to_date(month: str | None, end: bool = False) -> date | None:
@@ -230,13 +234,14 @@ def compile_rule_to_queries(rule: ResolvedRule) -> tuple[str, str]:
         return f"SELECT count(*) AS violations FROM silver WHERE {where}", f"SELECT * FROM silver WHERE {where} LIMIT 100"
     if kind == "RANGE":
         col = rule.params["column"]
-        min_v = rule.params["min"]
-        max_v = rule.params["max"]
-        where = f'"{col}" IS NOT NULL AND ("{col}" < {min_v} OR "{col}" > {max_v})'
+        min_v = float(rule.params["min"])
+        max_v = float(rule.params["max"])
+        numeric_col = f'TRY_CAST("{col}" AS DOUBLE)'
+        where = f'{numeric_col} IS NOT NULL AND ({numeric_col} < {min_v} OR {numeric_col} > {max_v})'
         return f"SELECT count(*) AS violations FROM silver WHERE {where}", f"SELECT * FROM silver WHERE {where} LIMIT 100"
     if kind == "ALLOWED_VALUES":
         col = rule.params["column"]
-        quoted = ", ".join([f"'{str(v).replace("'", "''")}'" for v in rule.params["values"]])
+        quoted = ", ".join([f"'{str(v).replace(chr(39), chr(39) * 2)}'" for v in rule.params["values"]])
         where = f'"{col}" IS NOT NULL AND "{col}" NOT IN ({quoted})'
         return f"SELECT count(*) AS violations FROM silver WHERE {where}", f"SELECT * FROM silver WHERE {where} LIMIT 100"
     if kind == "REGEX":
@@ -322,10 +327,32 @@ def run_validation_engine(
     s3_glob = f"s3://{os.getenv('S3_BUCKET', 'health-raw')}/{silver_prefix}/**/*.parquet"
 
     con = duckdb.connect()
-    _configure_s3(con)
-    con.execute(
-        f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet('{s3_glob}')"
-    )
+    staged_dir: TemporaryDirectory[str] | None = None
+    s3_enabled = _configure_s3(con)
+    if s3_enabled:
+        con.execute(
+            f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet('{s3_glob}')"
+        )
+    else:
+        staged_dir = TemporaryDirectory()
+        local_root = Path(staged_dir.name) / "silver"
+        parquet_count = 0
+        for obj in object_store.list_objects(f"{silver_prefix}/"):
+            if not obj.key.endswith(".parquet"):
+                continue
+            rel = obj.key[len(f"{silver_prefix}/") :]
+            out = local_root / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(object_store.get_bytes(obj.key))
+            parquet_count += 1
+
+        if parquet_count == 0:
+            raise RuntimeError(f"No silver parquet files found under {silver_prefix}")
+
+        con.execute(
+            f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet('{local_root.as_posix()}/**/*.parquet')"
+        )
+        logger.info("DuckDB httpfs unavailable; validation used locally staged parquet inputs")
 
     total_rows = int(con.execute("SELECT count(*) FROM silver").fetchone()[0] or 0)
     rows_by_month = {
@@ -465,7 +492,7 @@ def run_validation_engine(
                 row,
             )
 
-    return ValidationReport(
+    report = ValidationReport(
         submission_id=submission.submission_id,
         validation_run_id=validation_run_id,
         rule_set_id=rule_set_id,
@@ -476,3 +503,8 @@ def run_validation_engine(
         report_object_key=report_key,
         findings=rule_results,
     )
+
+    con.close()
+    if staged_dir is not None:
+        staged_dir.cleanup()
+    return report
