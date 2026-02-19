@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import socket
+import subprocess
+import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,7 +13,6 @@ from pathlib import Path
 import boto3
 import pytest
 from dagster import build_asset_context, build_sensor_context
-from moto.server import ThreadedMotoServer
 from sqlalchemy import create_engine, text
 
 from health_platform.assets.layout_assets import LAYOUT_ROOT, sync_layout_registry
@@ -27,8 +30,58 @@ from health_platform.validation.jobs import validate_submission_job
 from health_platform.validation.sensors import ready_for_validate_sensor
 
 
+def _pick_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.fixture(scope="session")
+def moto_s3_endpoint_url():
+    port = _pick_free_port()
+    cmd = [sys.executable, "-m", "moto.server", "-H", "127.0.0.1", "-p", str(port)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    endpoint = f"http://127.0.0.1:{port}"
+    deadline = time.time() + 15
+    ready = False
+    while time.time() < deadline:
+        try:
+            client = boto3.client(
+                "s3",
+                region_name="us-east-1",
+                endpoint_url=endpoint,
+                aws_access_key_id="test",
+                aws_secret_access_key="test",
+            )
+            client.list_buckets()
+            ready = True
+            break
+        except Exception:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.25)
+
+    if not ready:
+        stdout, stderr = proc.communicate(timeout=5)
+        raise RuntimeError(
+            "moto_server failed to start for S3 integration tests. "
+            f"stdout={stdout!r} stderr={stderr!r}"
+        )
+
+    try:
+        yield endpoint
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
 @pytest.fixture()
-def env(tmp_path, monkeypatch):
+def env(tmp_path, monkeypatch, moto_s3_endpoint_url):
     db_path = tmp_path / "metadata.db"
     engine = create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
     with engine.begin() as conn:
@@ -234,10 +287,7 @@ def env(tmp_path, monkeypatch):
             """
         )
 
-    server = ThreadedMotoServer(port=0)
-    server.start()
-    _host, port = server.get_host_and_port()
-    endpoint = f"http://127.0.0.1:{port}"
+    endpoint = moto_s3_endpoint_url
 
     bucket = f"health-raw-{uuid.uuid4().hex[:8]}"
     client = boto3.client(
@@ -249,15 +299,17 @@ def env(tmp_path, monkeypatch):
     )
     client.create_bucket(Bucket=bucket)
 
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setenv("S3_ENDPOINT_URL", endpoint)
+    monkeypatch.setenv("S3_USE_SSL", "false")
+    monkeypatch.setenv("S3_URL_STYLE", "path")
     monkeypatch.setenv("S3_REGION", "us-east-1")
     monkeypatch.setenv("S3_ACCESS_KEY_ID", "test")
     monkeypatch.setenv("S3_SECRET_ACCESS_KEY", "test")
     monkeypatch.setenv("S3_BUCKET", bucket)
-    try:
-        yield engine, S3ObjectStore(client, bucket)
-    finally:
-        server.stop()
+    yield engine, S3ObjectStore(client, bucket)
 
 
 def _run_discovery_sensor(engine, store):

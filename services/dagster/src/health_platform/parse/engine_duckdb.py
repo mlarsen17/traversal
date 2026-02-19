@@ -10,6 +10,7 @@ import duckdb
 
 from health_platform.intake.constants import SILVER_ROOT
 from health_platform.intake.object_store import ObjectStore
+from health_platform.utils.duckdb_s3 import configure_duckdb_s3
 
 
 @dataclass(frozen=True)
@@ -74,24 +75,20 @@ def _typed_expr(raw_col: str, column_type: str, date_formats: list[str]) -> str:
 
 def _configure_s3(con: duckdb.DuckDBPyConnection) -> bool:
     try:
-        con.execute("LOAD httpfs")
+        configure_duckdb_s3(
+            con,
+            {
+                "region": os.getenv("S3_REGION", "us-east-1"),
+                "access_key_id": os.getenv("S3_ACCESS_KEY_ID", ""),
+                "secret_access_key": os.getenv("S3_SECRET_ACCESS_KEY", ""),
+                "session_token": os.getenv("S3_SESSION_TOKEN"),
+                "endpoint_url": os.getenv("S3_ENDPOINT_URL"),
+                "url_style": os.getenv("S3_URL_STYLE", "path"),
+            },
+        )
+        return True
     except Exception:
-        try:
-            con.execute("INSTALL httpfs")
-            con.execute("LOAD httpfs")
-        except Exception:
-            return False
-    con.execute(f"SET s3_region='{os.getenv('S3_REGION', 'us-east-1')}'")
-    con.execute(f"SET s3_access_key_id='{os.getenv('S3_ACCESS_KEY_ID', '')}'")
-    con.execute(f"SET s3_secret_access_key='{os.getenv('S3_SECRET_ACCESS_KEY', '')}'")
-    endpoint = os.getenv("S3_ENDPOINT_URL")
-    if endpoint:
-        cleaned = endpoint.replace("http://", "").replace("https://", "")
-        use_ssl = endpoint.startswith("https://")
-        con.execute(f"SET s3_endpoint='{cleaned}'")
-        con.execute(f"SET s3_use_ssl={'true' if use_ssl else 'false'}")
-        con.execute("SET s3_url_style='path'")
-    return True
+        return False
 
 
 def parse_submission_to_silver(

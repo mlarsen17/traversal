@@ -17,7 +17,9 @@ COPY services/dagster/dagster.yaml /opt/dagster/app/dagster.yaml
 COPY services/dagster/workspace.yaml /opt/dagster/app/workspace.yaml
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir . \
+    && pip install --no-cache-dir ruff \
+    && ruff format --check src
 
 RUN mkdir -p /opt/dagster/dagster_home \
     && cp /opt/dagster/app/dagster.yaml /opt/dagster/dagster_home/dagster.yaml
