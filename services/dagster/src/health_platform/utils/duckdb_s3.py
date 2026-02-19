@@ -25,7 +25,14 @@ def _copy_httpfs_extension_from_wheel(error_text: str) -> bool:
         target = Path(match.group(1))
     else:
         home = Path(os.getenv("HOME", str(Path.home())))
-        target = home / ".duckdb" / "extensions" / f"v{duckdb.__version__}" / "linux_amd64_gcc4" / "httpfs.duckdb_extension"
+        target = (
+            home
+            / ".duckdb"
+            / "extensions"
+            / f"v{duckdb.__version__}"
+            / "linux_amd64_gcc4"
+            / "httpfs.duckdb_extension"
+        )
 
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
@@ -56,7 +63,9 @@ def _ensure_httpfs_loaded(con: duckdb.DuckDBPyConnection) -> None:
 def configure_duckdb_s3(con: duckdb.DuckDBPyConnection, s3_cfg: dict[str, str | None]) -> None:
     _ensure_httpfs_loaded(con)
 
-    con.execute(f"SET s3_region='{(s3_cfg.get('region') or 'us-east-1').replace(chr(39), chr(39) * 2)}'")
+    con.execute(
+        f"SET s3_region='{(s3_cfg.get('region') or 'us-east-1').replace(chr(39), chr(39) * 2)}'"
+    )
     con.execute(
         f"SET s3_access_key_id='{(s3_cfg.get('access_key_id') or '').replace(chr(39), chr(39) * 2)}'"
     )
@@ -77,4 +86,6 @@ def configure_duckdb_s3(con: duckdb.DuckDBPyConnection, s3_cfg: dict[str, str | 
         con.execute(f"SET s3_endpoint='{host_port.replace(chr(39), chr(39) * 2)}'")
         con.execute(f"SET s3_use_ssl={'true' if scheme == 'https' else 'false'}")
 
-    con.execute(f"SET s3_url_style='{(s3_cfg.get('url_style') or 'path').replace(chr(39), chr(39) * 2)}'")
+    con.execute(
+        f"SET s3_url_style='{(s3_cfg.get('url_style') or 'path').replace(chr(39), chr(39) * 2)}'"
+    )
