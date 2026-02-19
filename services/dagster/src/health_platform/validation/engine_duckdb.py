@@ -12,6 +12,7 @@ import duckdb
 from sqlalchemy import text
 
 from health_platform.intake.object_store import ObjectStore
+from health_platform.utils.duckdb_s3 import configure_duckdb_s3
 
 BLOCKED_SQL_KEYWORDS = {
     "DROP",
@@ -86,27 +87,18 @@ def _validate_custom_sql(sql: str) -> None:
             raise ValueError(f"CUSTOM_SQL contains blocked keyword: {keyword}")
 
 
-def _configure_s3(con: duckdb.DuckDBPyConnection) -> bool:
-    try:
-        con.execute("LOAD httpfs")
-    except Exception:
-        try:
-            con.execute("INSTALL httpfs")
-            con.execute("LOAD httpfs")
-        except Exception:
-            return False
-
-    con.execute(f"SET s3_region='{os.getenv('S3_REGION', 'us-east-1')}'")
-    con.execute(f"SET s3_access_key_id='{os.getenv('S3_ACCESS_KEY_ID', '')}'")
-    con.execute(f"SET s3_secret_access_key='{os.getenv('S3_SECRET_ACCESS_KEY', '')}'")
-    endpoint = os.getenv("S3_ENDPOINT_URL")
-    if endpoint:
-        cleaned = endpoint.replace("http://", "").replace("https://", "")
-        use_ssl = endpoint.startswith("https://")
-        con.execute(f"SET s3_endpoint='{cleaned}'")
-        con.execute(f"SET s3_use_ssl={'true' if use_ssl else 'false'}")
-        con.execute("SET s3_url_style='path'")
-    return True
+def _configure_s3(con: duckdb.DuckDBPyConnection) -> None:
+    configure_duckdb_s3(
+        con,
+        {
+            "region": os.getenv("S3_REGION", "us-east-1"),
+            "access_key_id": os.getenv("S3_ACCESS_KEY_ID", ""),
+            "secret_access_key": os.getenv("S3_SECRET_ACCESS_KEY", ""),
+            "session_token": os.getenv("S3_SESSION_TOKEN"),
+            "endpoint_url": os.getenv("S3_ENDPOINT_URL"),
+            "url_style": os.getenv("S3_URL_STYLE", "path"),
+        },
+    )
 
 
 def _month_to_date(month: str | None, end: bool = False) -> date | None:
@@ -345,30 +337,16 @@ def run_validation_engine(
     s3_glob = f"s3://{os.getenv('S3_BUCKET', 'health-raw')}/{silver_prefix}/**/*.parquet"
 
     con = duckdb.connect()
-    staged_dir: TemporaryDirectory[str] | None = None
-    s3_enabled = _configure_s3(con)
-    if s3_enabled:
+    try:
+        _configure_s3(con)
         con.execute(f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet('{s3_glob}')")
-    else:
-        staged_dir = TemporaryDirectory()
-        local_root = Path(staged_dir.name) / "silver"
-        parquet_count = 0
-        for obj in object_store.list_objects(f"{silver_prefix}/"):
-            if not obj.key.endswith(".parquet"):
-                continue
-            rel = obj.key[len(f"{silver_prefix}/") :]
-            out = local_root / rel
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(object_store.get_bytes(obj.key))
-            parquet_count += 1
-
-        if parquet_count == 0:
-            raise RuntimeError(f"No silver parquet files found under {silver_prefix}")
-
-        con.execute(
-            f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet('{local_root.as_posix()}/**/*.parquet')"
-        )
-        logger.info("DuckDB httpfs unavailable; validation used locally staged parquet inputs")
+    except Exception as exc:
+        raise RuntimeError(
+            "DuckDB failed to read silver parquet from S3 "
+            f"(submission_id={submission.submission_id}, silver_prefix={silver_prefix}): {exc}. "
+            "Ensure DuckDB httpfs is available and S3 settings (region, credentials, endpoint, ssl, "
+            "and path-style URLs) are configured correctly."
+        ) from exc
 
     total_rows = int(con.execute("SELECT count(*) FROM silver").fetchone()[0] or 0)
     rows_by_month = {
@@ -528,6 +506,4 @@ def run_validation_engine(
     )
 
     con.close()
-    if staged_dir is not None:
-        staged_dir.cleanup()
     return report
