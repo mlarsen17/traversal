@@ -16,6 +16,7 @@ from dagster import build_asset_context, build_sensor_context
 from sqlalchemy import create_engine, text
 
 from health_platform.assets.layout_assets import LAYOUT_ROOT, sync_layout_registry
+from health_platform.gold_submitter.jobs import build_submitter_gold_job
 from health_platform.intake.filename_conventions import (
     FilenameConvention,
     ParsedFilename,
@@ -123,6 +124,7 @@ def env(tmp_path, monkeypatch, moto_s3_endpoint_url):
                 manifest_object_key TEXT NOT NULL,
                 manifest_sha256 TEXT NOT NULL,
                 group_fingerprint TEXT,
+                created_at TEXT,
                 latest_validation_run_id TEXT
             )
             """
@@ -286,6 +288,36 @@ def env(tmp_path, monkeypatch, moto_s3_endpoint_url):
             )
             """
         )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE submitter_month_pointer (
+                state TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                submitter_id TEXT NOT NULL,
+                atomic_month TEXT NOT NULL,
+                winning_submission_id TEXT NOT NULL,
+                replaced_submission_id TEXT,
+                winning_validation_run_id TEXT,
+                winner_timestamp TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reason TEXT,
+                UNIQUE (state, file_type, submitter_id, atomic_month)
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE submitter_gold_build (
+                submitter_gold_build_id TEXT PRIMARY KEY,
+                submission_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                status TEXT NOT NULL,
+                months_affected_json TEXT NOT NULL,
+                error_message TEXT
+            )
+            """
+        )
 
     endpoint = moto_s3_endpoint_url
 
@@ -353,6 +385,15 @@ def _run_validate_sensor(engine, store):
 
 def _execute_validate(run_config, engine, store):
     result = validate_submission_job.execute_in_process(
+        run_config=run_config,
+        resources={"metadata_db": engine, "object_store": store},
+        raise_on_error=False,
+    )
+    return result
+
+
+def _execute_submitter_gold(run_config, engine, store):
+    result = build_submitter_gold_job.execute_in_process(
         run_config=run_config,
         resources={"metadata_db": engine, "object_store": store},
         raise_on_error=False,
@@ -565,17 +606,23 @@ def test_layout_files_are_valid_json():
 
 
 def _seed_ready_medical_submission(
-    engine, store, csv_payload: bytes, object_name: str = "medical_202501_202503.csv"
+    engine,
+    store,
+    csv_payload: bytes,
+    object_name: str = "medical_202501_202503.csv",
+    drop_name: str = "drop1",
 ):
     sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
-    store.put_bytes(f"inbox/acme/drop1/{object_name}", csv_payload)
-    store.put_bytes("inbox/acme/drop1/_SUCCESS", b"")
+    store.put_bytes(f"inbox/acme/{drop_name}/{object_name}", csv_payload)
+    store.put_bytes(f"inbox/acme/{drop_name}/_SUCCESS", b"")
     _execute_discovery(engine, store)
     requests = _run_grouping_sensor(engine, store)
     _execute_register(requests[0], engine, store)
 
     with engine.begin() as conn:
-        return conn.execute(text("SELECT submission_id FROM submission")).scalar_one()
+        return conn.execute(
+            text("SELECT submission_id FROM submission ORDER BY received_at DESC LIMIT 1")
+        ).scalar_one()
 
 
 def test_p1_to_p2_happy_path_medical(env):
@@ -708,8 +755,16 @@ def test_parse_unknown_layout_fails_cleanly(env):
     assert status == "PARSE_FAILED"
 
 
-def _parse_medical_submission(engine, store, csv_payload: bytes) -> str:
-    submission_id = _seed_ready_medical_submission(engine, store, csv_payload)
+def _parse_medical_submission(
+    engine,
+    store,
+    csv_payload: bytes,
+    object_name: str = "medical_202501_202503.csv",
+    drop_name: str = "drop1",
+) -> str:
+    submission_id = _seed_ready_medical_submission(
+        engine, store, csv_payload, object_name=object_name, drop_name=drop_name
+    )
     parse_result = _execute_parse(
         {"ops": {"parse_submission_op": {"config": {"submission_id": submission_id}}}},
         engine,
@@ -925,3 +980,232 @@ def test_validation_rule_set_selection_prefers_layout_specific(env):
         ).scalar_one()
 
     assert used_rule_set == preferred_rule_set
+
+
+def _mark_submission_validated(engine, submission_id: str, ended_at: str):
+    validation_run_id = str(uuid.uuid4())
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO validation_run(
+                    validation_run_id, submission_id, rule_set_id, started_at, ended_at, status,
+                    outcome, engine, engine_version, silver_prefix, total_rows, report_object_key, error_message
+                ) VALUES (
+                    :validation_run_id, :submission_id, :rule_set_id, :started_at, :ended_at, 'SUCCEEDED',
+                    'PASS', 'duckdb', NULL, :silver_prefix, 0, NULL, NULL
+                )
+                """
+            ),
+            {
+                "validation_run_id": validation_run_id,
+                "submission_id": submission_id,
+                "rule_set_id": "test-ruleset",
+                "started_at": ended_at,
+                "ended_at": ended_at,
+                "silver_prefix": f"silver/acme/medical/{submission_id}",
+            },
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE submission
+                SET status='VALIDATED', latest_validation_run_id=:validation_run_id
+                WHERE submission_id=:submission_id
+                """
+            ),
+            {"validation_run_id": validation_run_id, "submission_id": submission_id},
+        )
+
+
+def _gold_month_rows_local(store, submitter_id: str, state: str, file_type: str, month: str) -> int:
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    import duckdb
+
+    key_prefix = f"gold_submitter/{state}/{file_type}/{submitter_id}/atomic_month={month}/"
+    keys = [obj.key for obj in store.list_objects(key_prefix) if obj.key.endswith(".parquet")]
+    assert keys
+    with TemporaryDirectory() as tempdir:
+        local_paths: list[str] = []
+        for idx, key in enumerate(keys):
+            path = Path(tempdir) / f"part_{idx}.parquet"
+            path.write_bytes(store.get_bytes(key))
+            local_paths.append(path.as_posix())
+        con = duckdb.connect()
+        try:
+            path_list = ", ".join(f"'{p}'" for p in local_paths)
+            return int(
+                con.execute(f"SELECT COUNT(*) FROM read_parquet([{path_list}])").fetchone()[0]
+            )
+        finally:
+            con.close()
+
+
+def test_submitter_gold_initial_merge_creates_pointer_and_partitions(env):
+    engine, store = env
+    submission_id = _parse_medical_submission(
+        engine,
+        store,
+        (
+            b"Id,START,STOP,PATIENT,CODE\n"
+            b"enc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,p1,99201\n"
+            b"enc2,2025-02-01T00:00:00Z,2025-02-01T01:00:00Z,p2,99202\n"
+        ),
+        object_name="medical_202501_202502.csv",
+    )
+    _mark_submission_validated(engine, submission_id, "2025-02-20T00:00:00+00:00")
+
+    result = _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": submission_id}}}},
+        engine,
+        store,
+    )
+    assert result.success
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT atomic_month, winning_submission_id
+                FROM submitter_month_pointer
+                ORDER BY atomic_month
+                """
+            )
+        ).fetchall()
+
+    assert [(row.atomic_month, row.winning_submission_id) for row in rows] == [
+        ("2025-01", submission_id),
+        ("2025-02", submission_id),
+    ]
+    assert _gold_month_rows_local(store, "acme", "__unknown__", "medical", "2025-01") == 1
+    assert _gold_month_rows_local(store, "acme", "__unknown__", "medical", "2025-02") == 1
+
+
+def test_submitter_gold_correction_updates_only_overlapping_month(env):
+    engine, store = env
+    s1 = _parse_medical_submission(
+        engine,
+        store,
+        (
+            b"Id,START,STOP,PATIENT,CODE\n"
+            b"enc1,2025-01-01T00:00:00Z,2025-01-01T01:00:00Z,p1,99201\n"
+            b"enc2,2025-02-01T00:00:00Z,2025-02-01T01:00:00Z,p2,99202\n"
+        ),
+        object_name="medical_202501_202502.csv",
+    )
+    _mark_submission_validated(engine, s1, "2025-02-20T00:00:00+00:00")
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": s1}}}},
+        engine,
+        store,
+    ).success
+
+    s2 = _parse_medical_submission(
+        engine,
+        store,
+        b"Id,START,STOP,PATIENT,CODE\nenc3,2025-02-05T00:00:00Z,2025-02-05T01:00:00Z,p3,99299\n",
+        object_name="medical_202502_202502.csv",
+    )
+    _mark_submission_validated(engine, s2, "2025-02-21T00:00:00+00:00")
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": s2}}}},
+        engine,
+        store,
+    ).success
+
+    with engine.begin() as conn:
+        jan = conn.execute(
+            text(
+                """
+                SELECT winning_submission_id, replaced_submission_id
+                FROM submitter_month_pointer
+                WHERE atomic_month='2025-01'
+                """
+            )
+        ).one()
+        feb = conn.execute(
+            text(
+                """
+                SELECT winning_submission_id, replaced_submission_id
+                FROM submitter_month_pointer
+                WHERE atomic_month='2025-02'
+                """
+            )
+        ).one()
+
+    assert jan.winning_submission_id == s1
+    assert jan.replaced_submission_id is None
+    assert feb.winning_submission_id == s2
+    assert feb.replaced_submission_id == s1
+    assert _gold_month_rows_local(store, "acme", "__unknown__", "medical", "2025-01") == 1
+    assert _gold_month_rows_local(store, "acme", "__unknown__", "medical", "2025-02") == 1
+
+
+def test_submitter_gold_older_submission_is_noop(env):
+    engine, store = env
+    s1 = _parse_medical_submission(
+        engine,
+        store,
+        b"Id,START,STOP,PATIENT,CODE\nenc1,2025-02-01T00:00:00Z,2025-02-01T01:00:00Z,p1,99201\n",
+        object_name="medical_202502_202502.csv",
+    )
+    _mark_submission_validated(engine, s1, "2025-02-10T00:00:00+00:00")
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE submission SET received_at='2025-02-02T00:00:00+00:00' WHERE submission_id=:id"
+            ),
+            {"id": s1},
+        )
+
+    s2 = _parse_medical_submission(
+        engine,
+        store,
+        b"Id,START,STOP,PATIENT,CODE\nenc2,2025-02-10T00:00:00Z,2025-02-10T01:00:00Z,p2,99202\n",
+        object_name="medical_202502_202502.csv",
+        drop_name="drop2",
+    )
+    _mark_submission_validated(engine, s2, "2025-02-20T00:00:00+00:00")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE submission SET received_at='2025-02-15T00:00:00+00:00' WHERE submission_id=:id"
+            ),
+            {"id": s2},
+        )
+
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": s2}}}},
+        engine,
+        store,
+    ).success
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": s1}}}},
+        engine,
+        store,
+    ).success
+
+    with engine.begin() as conn:
+        pointer = conn.execute(
+            text(
+                "SELECT winning_submission_id FROM submitter_month_pointer WHERE atomic_month='2025-02'"
+            )
+        ).scalar_one()
+        latest_build = conn.execute(
+            text(
+                """
+                SELECT months_affected_json
+                FROM submitter_gold_build
+                WHERE submission_id=:submission_id
+                ORDER BY started_at DESC
+                LIMIT 1
+                """
+            ),
+            {"submission_id": s1},
+        ).scalar_one()
+
+    assert pointer == s2
+    assert json.loads(latest_build) == []

@@ -101,6 +101,48 @@ def _configure_s3(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _stage_silver_locally(object_store: ObjectStore, silver_prefix: str, tempdir: str) -> list[str]:
+    parquet_objects = [
+        obj
+        for obj in object_store.list_objects(f"{silver_prefix}/")
+        if obj.key.endswith(".parquet")
+    ]
+    if not parquet_objects:
+        raise RuntimeError(f"No silver parquet files found under {silver_prefix}/")
+
+    local_paths: list[str] = []
+    for idx, obj in enumerate(parquet_objects):
+        local_path = Path(tempdir) / f"silver_{idx}.parquet"
+        local_path.write_bytes(object_store.get_bytes(obj.key))
+        local_paths.append(local_path.as_posix())
+    return local_paths
+
+
+def _create_silver_view(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    object_store: ObjectStore,
+    silver_prefix: str,
+    logger,
+) -> None:
+    s3_glob = f"s3://{os.getenv('S3_BUCKET', 'health-raw')}/{silver_prefix}/**/*.parquet"
+    try:
+        _configure_s3(con)
+        con.execute(f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet('{s3_glob}')")
+        return
+    except Exception as exc:
+        logger.warning(
+            "Failed S3-backed silver read for submission %s; falling back to local staged parquet: %s",
+            silver_prefix.split("/")[-1],
+            exc,
+        )
+
+    with TemporaryDirectory() as tempdir:
+        local_paths = _stage_silver_locally(object_store, silver_prefix, tempdir)
+        path_list = ", ".join(f"'{path}'" for path in local_paths)
+        con.execute(f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet([{path_list}])")
+
+
 def _month_to_date(month: str | None, end: bool = False) -> date | None:
     if not month:
         return None
@@ -334,18 +376,19 @@ def run_validation_engine(
     silver_prefix = (
         f"silver/{submission.submitter_id}/{submission.file_type}/{submission.submission_id}"
     )
-    s3_glob = f"s3://{os.getenv('S3_BUCKET', 'health-raw')}/{silver_prefix}/**/*.parquet"
 
     con = duckdb.connect()
     try:
-        _configure_s3(con)
-        con.execute(f"CREATE OR REPLACE VIEW silver AS SELECT * FROM read_parquet('{s3_glob}')")
+        _create_silver_view(
+            con=con,
+            object_store=object_store,
+            silver_prefix=silver_prefix,
+            logger=logger,
+        )
     except Exception as exc:
         raise RuntimeError(
-            "DuckDB failed to read silver parquet from S3 "
-            f"(submission_id={submission.submission_id}, silver_prefix={silver_prefix}): {exc}. "
-            "Ensure DuckDB httpfs is available and S3 settings (region, credentials, endpoint, ssl, "
-            "and path-style URLs) are configured correctly."
+            "DuckDB failed to read silver parquet "
+            f"(submission_id={submission.submission_id}, silver_prefix={silver_prefix}): {exc}."
         ) from exc
 
     total_rows = int(con.execute("SELECT count(*) FROM silver").fetchone()[0] or 0)
