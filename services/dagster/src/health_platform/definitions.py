@@ -5,6 +5,8 @@ from health_platform.assets import (
     seed_validation_rule_sets,
     sync_layout_registry,
 )
+from health_platform.gold_submitter.jobs import build_submitter_gold_job
+from health_platform.gold_submitter.sensors import ready_for_submitter_gold_sensor
 from health_platform.intake.jobs import discover_inbox_objects_job, register_submission_job
 from health_platform.intake.sensors import inbox_discovery_sensor, inbox_grouping_sensor
 from health_platform.parse.jobs import parse_submission_job
@@ -20,12 +22,14 @@ defs = Definitions(
         register_submission_job,
         parse_submission_job,
         validate_submission_job,
+        build_submitter_gold_job,
     ],
     sensors=[
         inbox_discovery_sensor,
         inbox_grouping_sensor,
         ready_for_parse_sensor,
         ready_for_validate_sensor,
+        ready_for_submitter_gold_sensor,
     ],
     resources={
         "metadata_db": metadata_db_resource,
