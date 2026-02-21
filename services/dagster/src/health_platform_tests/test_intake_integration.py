@@ -41,7 +41,7 @@ def _pick_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def moto_s3_endpoint_url():
     port = _pick_free_port()
     cmd = [sys.executable, "-m", "moto.server", "-H", "127.0.0.1", "-p", str(port)]
@@ -1427,7 +1427,95 @@ def test_canonical_union_across_submitters(env):
 
 def test_canonical_idempotency_skip(env):
     engine, store = env
-    test_canonical_union_across_submitters(env)
+    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    sync_canonical_registry(build_asset_context(resources={"metadata_db": engine}))
+
+    submission_id = str(uuid.uuid4())
+    with engine.begin() as conn:
+        layout_id = conn.execute(
+            text(
+                "SELECT layout_id FROM layout_registry WHERE file_type='medical' AND layout_version='v1'"
+            )
+        ).scalar_one()
+        conn.execute(
+            text(
+                """
+                INSERT INTO submission(
+                    submission_id, submitter_id, state, file_type, layout_id, coverage_start_month,
+                    coverage_end_month, received_at, status, grouping_method, inbox_prefix, raw_prefix,
+                    manifest_object_key, manifest_sha256, created_at, latest_validation_run_id
+                ) VALUES (
+                    :submission_id, 'aetna', 'MA', 'medical', :layout_id, '202501',
+                    '202501', '2025-02-20T00:00:00+00:00', 'VALIDATED', 'AUTO', 'inbox/x', 'raw/x',
+                    'raw/x/manifest.json', 'abc', '2025-02-20T00:00:00+00:00', :validation_run_id
+                )
+                """
+            ),
+            {
+                "submission_id": submission_id,
+                "layout_id": layout_id,
+                "validation_run_id": f"vr-{submission_id}",
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO validation_run(
+                    validation_run_id, submission_id, rule_set_id, started_at, ended_at, status,
+                    outcome, engine, engine_version, silver_prefix, total_rows, report_object_key, error_message
+                ) VALUES (
+                    :validation_run_id, :submission_id, 'rules', '2025-02-20T00:00:00+00:00',
+                    '2025-02-20T00:00:00+00:00', 'SUCCEEDED', 'PASS', 'duckdb', NULL,
+                    :silver_prefix, 1, NULL, NULL
+                )
+                """
+            ),
+            {
+                "validation_run_id": f"vr-{submission_id}",
+                "submission_id": submission_id,
+                "silver_prefix": f"silver/aetna/medical/{submission_id}",
+            },
+        )
+
+    with duckdb.connect() as con:
+        tmp = Path(f"/tmp/{submission_id}.parquet")
+        con.execute(
+            f"""
+            COPY (
+                SELECT 'enc-idem' AS Id,
+                       '2025-01-01T00:00:00Z' AS START,
+                       '2025-01-01T01:00:00Z' AS STOP,
+                       'member-idem' AS PATIENT,
+                       'prov1' AS PROVIDER,
+                       'ORG' AS ORGANIZATION,
+                       'ambulatory' AS ENCOUNTERCLASS,
+                       '123' AS CODE,
+                       'visit' AS DESCRIPTION
+            ) TO '{tmp.as_posix()}' (FORMAT PARQUET)
+            """
+        )
+        store.put_bytes(
+            f"silver/aetna/medical/{submission_id}/atomic_month=2025-01/part-0000.parquet",
+            tmp.read_bytes(),
+        )
+
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": submission_id}}}},
+        engine,
+        store,
+    ).success
+
+    assert _execute_canonical(
+        {
+            "ops": {
+                "build_canonical_month_op": {
+                    "config": {"state": "MA", "file_type": "medical", "atomic_month": "2025-01"}
+                }
+            }
+        },
+        engine,
+        store,
+    ).success
 
     result = _execute_canonical(
         {

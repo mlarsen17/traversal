@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,7 +12,6 @@ import duckdb
 from sqlalchemy import text
 
 from health_platform.intake.object_store import ObjectStore
-from health_platform.utils.duckdb_s3 import configure_duckdb_s3
 
 
 @dataclass(frozen=True)
@@ -32,20 +30,6 @@ def _now() -> datetime:
 
 def _escape_sql_string(value: str) -> str:
     return value.replace("'", "''")
-
-
-def _configure_s3(con: duckdb.DuckDBPyConnection) -> None:
-    configure_duckdb_s3(
-        con,
-        {
-            "region": os.getenv("S3_REGION", "us-east-1"),
-            "access_key_id": os.getenv("S3_ACCESS_KEY_ID", ""),
-            "secret_access_key": os.getenv("S3_SECRET_ACCESS_KEY", ""),
-            "session_token": os.getenv("S3_SESSION_TOKEN"),
-            "endpoint_url": os.getenv("S3_ENDPOINT_URL"),
-            "url_style": os.getenv("S3_URL_STYLE", "path"),
-        },
-    )
 
 
 def _input_fingerprint(
@@ -231,37 +215,29 @@ def build_canonical_month(
     try:
         with TemporaryDirectory() as tempdir:
             union_queries: list[str] = []
-            _configure_s3(con)
-            bucket = os.getenv("S3_BUCKET", "health-raw")
 
             for idx, winner in enumerate(winners):
                 source_prefix = (
                     f"gold_submitter/{state}/{file_type}/{winner.submitter_id}/"
                     f"atomic_month={atomic_month}"
                 )
-                source_glob = f"s3://{bucket}/{source_prefix}/*.parquet"
                 view_name = f"src_{idx}"
-                try:
-                    con.execute(
-                        f"CREATE OR REPLACE VIEW {view_name} AS SELECT * FROM read_parquet('{source_glob}')"
+                local_paths: list[str] = []
+                for key_idx, obj in enumerate(object_store.list_objects(source_prefix)):
+                    if not obj.key.endswith(".parquet"):
+                        continue
+                    local = Path(tempdir) / f"winner_{idx}_{key_idx}.parquet"
+                    local.write_bytes(object_store.get_bytes(obj.key))
+                    local_paths.append(local.as_posix())
+                if not local_paths:
+                    raise RuntimeError(
+                        f"No gold_submitter parquet files found under {source_prefix}"
                     )
-                except Exception as exc:
-                    logger.warning("Falling back to staged local parquet read: %s", exc)
-                    local_paths: list[str] = []
-                    for key_idx, obj in enumerate(object_store.list_objects(source_prefix)):
-                        if not obj.key.endswith(".parquet"):
-                            continue
-                        local = Path(tempdir) / f"winner_{idx}_{key_idx}.parquet"
-                        local.write_bytes(object_store.get_bytes(obj.key))
-                        local_paths.append(local.as_posix())
-                    if not local_paths:
-                        raise RuntimeError(
-                            f"No gold_submitter parquet files found under {source_prefix}"
-                        ) from exc
-                    path_list = ", ".join(f"'{p}'" for p in local_paths)
-                    con.execute(
-                        f"CREATE OR REPLACE VIEW {view_name} AS SELECT * FROM read_parquet([{path_list}])"
-                    )
+
+                path_list = ", ".join(f"'{p}'" for p in local_paths)
+                con.execute(
+                    f"CREATE OR REPLACE VIEW {view_name} AS SELECT * FROM read_parquet([{path_list}])"
+                )
                 table_cols = {
                     row[1] for row in con.execute(f"PRAGMA table_info('{view_name}')").fetchall()
                 }
