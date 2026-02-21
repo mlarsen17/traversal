@@ -1,0 +1,15 @@
+{
+  "file_type": "medical",
+  "schema_version": "v1",
+  "status": "ACTIVE",
+  "columns": [
+    {"name": "member_id", "type": "TEXT", "required": true},
+    {"name": "encounter_id", "type": "TEXT", "required": true},
+    {"name": "provider_id", "type": "TEXT", "required": false},
+    {"name": "service_start_date", "type": "DATE", "required": true},
+    {"name": "service_end_date", "type": "DATE", "required": false},
+    {"name": "encounter_class", "type": "TEXT", "required": false},
+    {"name": "code", "type": "TEXT", "required": false},
+    {"name": "description", "type": "TEXT", "required": false}
+  ]
+}

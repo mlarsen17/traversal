@@ -1,0 +1,17 @@
+{
+  "file_type": "medical",
+  "layout_version": "v1",
+  "schema_version": "v1",
+  "mapping_version": "v1",
+  "status": "ACTIVE",
+  "mapping": {
+    "member_id": {"source": "PATIENT"},
+    "encounter_id": {"source": "Id"},
+    "provider_id": {"coalesce": ["PROVIDER", "ORGANIZATION"]},
+    "service_start_date": {"source": "START", "cast": "DATE"},
+    "service_end_date": {"source": "STOP", "cast": "DATE"},
+    "encounter_class": {"source": "ENCOUNTERCLASS"},
+    "code": {"source": "CODE"},
+    "description": {"source": "DESCRIPTION"}
+  }
+}

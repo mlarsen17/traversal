@@ -1,0 +1,15 @@
+{
+  "file_type": "pharmacy",
+  "layout_version": "v1",
+  "schema_version": "v1",
+  "mapping_version": "v1",
+  "status": "ACTIVE",
+  "mapping": {
+    "member_id": {"source": "PATIENT"},
+    "medication_id": {"coalesce": ["ENCOUNTER", "CODE"]},
+    "start_date": {"source": "START", "cast": "DATE"},
+    "stop_date": {"source": "STOP", "cast": "DATE"},
+    "code": {"source": "CODE"},
+    "description": {"source": "DESCRIPTION"}
+  }
+}

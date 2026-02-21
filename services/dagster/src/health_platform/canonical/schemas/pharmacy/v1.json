@@ -1,0 +1,13 @@
+{
+  "file_type": "pharmacy",
+  "schema_version": "v1",
+  "status": "ACTIVE",
+  "columns": [
+    {"name": "member_id", "type": "TEXT", "required": true},
+    {"name": "medication_id", "type": "TEXT", "required": true},
+    {"name": "start_date", "type": "DATE", "required": true},
+    {"name": "stop_date", "type": "DATE", "required": false},
+    {"name": "code", "type": "TEXT", "required": false},
+    {"name": "description", "type": "TEXT", "required": false}
+  ]
+}
