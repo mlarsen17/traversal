@@ -1,7 +1,7 @@
 """p2 parse runs and metrics tables
 
 Revision ID: 0004_p2_parse_runs
-Revises: 0003_p1_1_quiescence_last_changed_at
+Revises: 0003_p1_1_quiescence
 Create Date: 2026-02-17 00:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0004_p2_parse_runs"
-down_revision: Union[str, None] = "0003_p1_1_quiescence_last_changed_at"
+down_revision: Union[str, None] = "0003_p1_1_quiescence"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

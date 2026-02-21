@@ -1,6 +1,6 @@
 """p1.1 quiescence and idempotency columns
 
-Revision ID: 0003_p1_1_quiescence_last_changed_at
+Revision ID: 0003_p1_1_quiescence
 Revises: 0002_p1_intake_tables
 Create Date: 2026-02-16 00:30:00.000000
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "0003_p1_1_quiescence_last_changed_at"
+revision: str = "0003_p1_1_quiescence"
 down_revision: Union[str, None] = "0002_p1_intake_tables"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
