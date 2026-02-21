@@ -153,9 +153,26 @@ def build_submitter_gold_op(context) -> list[str]:
                             "reason": "latest_validated_wins",
                         },
                     ).fetchone()
-
-                if result is not None:
-                    months_changed.append(month)
+                    if result is not None:
+                        months_changed.append(month)
+                        conn.execute(
+                            text(
+                                """
+                                INSERT INTO canonical_rebuild_queue(
+                                    state, file_type, atomic_month, enqueued_at, reason
+                                ) VALUES (
+                                    :state, :file_type, :atomic_month, :enqueued_at, :reason
+                                )
+                                """
+                            ),
+                            {
+                                "state": state,
+                                "file_type": row.file_type,
+                                "atomic_month": month,
+                                "enqueued_at": _now(),
+                                "reason": "SUBMITTER_MONTH_WINNER_UPDATED",
+                            },
+                        )
 
             gold_built_at = _now()
             for month in months_changed:

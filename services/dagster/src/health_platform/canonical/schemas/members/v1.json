@@ -1,0 +1,14 @@
+{
+  "file_type": "members",
+  "schema_version": "v1",
+  "status": "ACTIVE",
+  "columns": [
+    {"name": "member_id", "type": "TEXT", "required": true},
+    {"name": "birth_date", "type": "DATE", "required": false},
+    {"name": "death_date", "type": "DATE", "required": false},
+    {"name": "gender", "type": "TEXT", "required": false},
+    {"name": "race", "type": "TEXT", "required": false},
+    {"name": "ethnicity", "type": "TEXT", "required": false},
+    {"name": "zip", "type": "TEXT", "required": false}
+  ]
+}

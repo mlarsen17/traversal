@@ -11,11 +11,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import boto3
+import duckdb
 import pytest
 from dagster import build_asset_context, build_sensor_context
 from sqlalchemy import create_engine, text
 
 from health_platform.assets.layout_assets import LAYOUT_ROOT, sync_layout_registry
+from health_platform.canonical.assets import MAPPING_ROOT, SCHEMA_ROOT, sync_canonical_registry
+from health_platform.gold_canonical.jobs import build_canonical_month_job
+from health_platform.gold_canonical.sensors import canonical_rebuild_sensor
 from health_platform.gold_submitter.jobs import build_submitter_gold_job
 from health_platform.intake.filename_conventions import (
     FilenameConvention,
@@ -37,7 +41,7 @@ def _pick_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def moto_s3_endpoint_url():
     port = _pick_free_port()
     cmd = [sys.executable, "-m", "moto.server", "-H", "127.0.0.1", "-p", str(port)]
@@ -318,6 +322,67 @@ def env(tmp_path, monkeypatch, moto_s3_endpoint_url):
             )
             """
         )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE canonical_schema (
+                canonical_schema_id TEXT PRIMARY KEY,
+                file_type TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                columns_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX ux_canonical_schema_file_type_ver ON canonical_schema(file_type, schema_version)"
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE canonical_mapping (
+                mapping_id TEXT PRIMARY KEY,
+                layout_id TEXT NOT NULL,
+                canonical_schema_id TEXT NOT NULL,
+                mapping_version TEXT NOT NULL,
+                mapping_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX ux_canonical_mapping_layout_schema_ver ON canonical_mapping(layout_id, canonical_schema_id, mapping_version)"
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE canonical_month_build (
+                canonical_month_build_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                atomic_month TEXT NOT NULL,
+                canonical_schema_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                status TEXT NOT NULL,
+                input_fingerprint TEXT NOT NULL,
+                output_prefix TEXT NOT NULL,
+                error_message TEXT
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE canonical_rebuild_queue (
+                queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                state TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                atomic_month TEXT NOT NULL,
+                enqueued_at TEXT NOT NULL,
+                reason TEXT,
+                processed_at TEXT
+            )
+            """
+        )
 
     endpoint = moto_s3_endpoint_url
 
@@ -394,6 +459,20 @@ def _execute_validate(run_config, engine, store):
 
 def _execute_submitter_gold(run_config, engine, store):
     result = build_submitter_gold_job.execute_in_process(
+        run_config=run_config,
+        resources={"metadata_db": engine, "object_store": store},
+        raise_on_error=False,
+    )
+    return result
+
+
+def _run_canonical_sensor(engine):
+    ctx = build_sensor_context(resources={"metadata_db": engine})
+    return list(canonical_rebuild_sensor(ctx))
+
+
+def _execute_canonical(run_config, engine, store):
+    result = build_canonical_month_job.execute_in_process(
         run_config=run_config,
         resources={"metadata_db": engine, "object_store": store},
         raise_on_error=False,
@@ -1209,3 +1288,506 @@ def test_submitter_gold_older_submission_is_noop(env):
 
     assert pointer == s2
     assert json.loads(latest_build) == []
+
+
+def _canonical_month_rows_local(store, state: str, file_type: str, month: str):
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    import duckdb
+
+    key_prefix = f"gold_canonical/{state}/{file_type}/atomic_month={month}/"
+    keys = [obj.key for obj in store.list_objects(key_prefix) if obj.key.endswith(".parquet")]
+    assert keys
+    with TemporaryDirectory() as tempdir:
+        local_paths: list[str] = []
+        for idx, key in enumerate(keys):
+            path = Path(tempdir) / f"canonical_{idx}.parquet"
+            path.write_bytes(store.get_bytes(key))
+            local_paths.append(path.as_posix())
+        con = duckdb.connect()
+        try:
+            path_list = ", ".join(f"'{p}'" for p in local_paths)
+            rows = con.execute(
+                f"SELECT * FROM read_parquet([{path_list}]) ORDER BY submitter_id"
+            ).fetchall()
+            cols = [d[0] for d in con.description]
+            return rows, cols
+        finally:
+            con.close()
+
+
+def test_canonical_registry_files_are_valid_json():
+    for schema_file in sorted(Path(SCHEMA_ROOT).glob("*/*.json")):
+        payload = json.loads(schema_file.read_text())
+        assert payload["file_type"]
+        assert isinstance(payload["columns"], list)
+
+    for mapping_file in sorted(Path(MAPPING_ROOT).glob("*/*/*.json")):
+        payload = json.loads(mapping_file.read_text())
+        assert payload["mapping_version"]
+        assert isinstance(payload["mapping"], dict)
+
+
+def test_canonical_union_across_submitters(env):
+    engine, store = env
+    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    sync_canonical_registry(build_asset_context(resources={"metadata_db": engine}))
+
+    for submitter_id, encounter_id in (("aetna", "enc1"), ("cigna", "enc2")):
+        submission_id = str(uuid.uuid4())
+        with engine.begin() as conn:
+            layout_id = conn.execute(
+                text(
+                    "SELECT layout_id FROM layout_registry WHERE file_type='medical' AND layout_version='v1'"
+                )
+            ).scalar_one()
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO submission(
+                        submission_id, submitter_id, state, file_type, layout_id, coverage_start_month,
+                        coverage_end_month, received_at, status, grouping_method, inbox_prefix, raw_prefix,
+                        manifest_object_key, manifest_sha256, created_at, latest_validation_run_id
+                    ) VALUES (
+                        :submission_id, :submitter_id, 'MA', 'medical', :layout_id, '202501',
+                        '202501', :received_at, 'VALIDATED', 'AUTO', 'inbox/x', 'raw/x',
+                        'raw/x/manifest.json', 'abc', :received_at, :validation_run_id
+                    )
+                    """
+                ),
+                {
+                    "submission_id": submission_id,
+                    "submitter_id": submitter_id,
+                    "layout_id": layout_id,
+                    "received_at": "2025-02-20T00:00:00+00:00",
+                    "validation_run_id": f"vr-{submission_id}",
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO validation_run(
+                        validation_run_id, submission_id, rule_set_id, started_at, ended_at, status,
+                        outcome, engine, engine_version, silver_prefix, total_rows, report_object_key, error_message
+                    ) VALUES (
+                        :validation_run_id, :submission_id, 'rules', :ended_at, :ended_at, 'SUCCEEDED',
+                        'PASS', 'duckdb', NULL, :silver_prefix, 1, NULL, NULL
+                    )
+                    """
+                ),
+                {
+                    "validation_run_id": f"vr-{submission_id}",
+                    "submission_id": submission_id,
+                    "ended_at": "2025-02-20T00:00:00+00:00",
+                    "silver_prefix": f"silver/{submitter_id}/medical/{submission_id}",
+                },
+            )
+
+        with duckdb.connect() as con:
+            tmp = Path(f"/tmp/{submission_id}.parquet")
+            con.execute(
+                f"""
+                COPY (
+                    SELECT '{encounter_id}' AS Id,
+                           '2025-01-01T00:00:00Z' AS START,
+                           '2025-01-01T01:00:00Z' AS STOP,
+                           '{submitter_id}-m1' AS PATIENT,
+                           'prov1' AS PROVIDER,
+                           'ORG' AS ORGANIZATION,
+                           'ambulatory' AS ENCOUNTERCLASS,
+                           '123' AS CODE,
+                           'visit' AS DESCRIPTION
+                ) TO '{tmp.as_posix()}' (FORMAT PARQUET)
+                """
+            )
+            store.put_bytes(
+                f"silver/{submitter_id}/medical/{submission_id}/atomic_month=2025-01/part-0000.parquet",
+                tmp.read_bytes(),
+            )
+
+        assert _execute_submitter_gold(
+            {"ops": {"build_submitter_gold_op": {"config": {"submission_id": submission_id}}}},
+            engine,
+            store,
+        ).success
+
+    run_requests = _run_canonical_sensor(engine)
+    assert run_requests
+    result = _execute_canonical(run_requests[0].run_config, engine, store)
+    assert result.success
+
+    rows, cols = _canonical_month_rows_local(store, "MA", "medical", "2025-01")
+    assert len(rows) == 2
+    assert "source_submission_id" in cols
+    assert "canonical_built_at" in cols
+    submitters = {row[cols.index("submitter_id")] for row in rows}
+    assert submitters == {"aetna", "cigna"}
+
+
+def test_canonical_idempotency_skip(env):
+    engine, store = env
+    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    sync_canonical_registry(build_asset_context(resources={"metadata_db": engine}))
+
+    submission_id = str(uuid.uuid4())
+    with engine.begin() as conn:
+        layout_id = conn.execute(
+            text(
+                "SELECT layout_id FROM layout_registry WHERE file_type='medical' AND layout_version='v1'"
+            )
+        ).scalar_one()
+        conn.execute(
+            text(
+                """
+                INSERT INTO submission(
+                    submission_id, submitter_id, state, file_type, layout_id, coverage_start_month,
+                    coverage_end_month, received_at, status, grouping_method, inbox_prefix, raw_prefix,
+                    manifest_object_key, manifest_sha256, created_at, latest_validation_run_id
+                ) VALUES (
+                    :submission_id, 'aetna', 'MA', 'medical', :layout_id, '202501',
+                    '202501', '2025-02-20T00:00:00+00:00', 'VALIDATED', 'AUTO', 'inbox/x', 'raw/x',
+                    'raw/x/manifest.json', 'abc', '2025-02-20T00:00:00+00:00', :validation_run_id
+                )
+                """
+            ),
+            {
+                "submission_id": submission_id,
+                "layout_id": layout_id,
+                "validation_run_id": f"vr-{submission_id}",
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO validation_run(
+                    validation_run_id, submission_id, rule_set_id, started_at, ended_at, status,
+                    outcome, engine, engine_version, silver_prefix, total_rows, report_object_key, error_message
+                ) VALUES (
+                    :validation_run_id, :submission_id, 'rules', '2025-02-20T00:00:00+00:00',
+                    '2025-02-20T00:00:00+00:00', 'SUCCEEDED', 'PASS', 'duckdb', NULL,
+                    :silver_prefix, 1, NULL, NULL
+                )
+                """
+            ),
+            {
+                "validation_run_id": f"vr-{submission_id}",
+                "submission_id": submission_id,
+                "silver_prefix": f"silver/aetna/medical/{submission_id}",
+            },
+        )
+
+    with duckdb.connect() as con:
+        tmp = Path(f"/tmp/{submission_id}.parquet")
+        con.execute(
+            f"""
+            COPY (
+                SELECT 'enc-idem' AS Id,
+                       '2025-01-01T00:00:00Z' AS START,
+                       '2025-01-01T01:00:00Z' AS STOP,
+                       'member-idem' AS PATIENT,
+                       'prov1' AS PROVIDER,
+                       'ORG' AS ORGANIZATION,
+                       'ambulatory' AS ENCOUNTERCLASS,
+                       '123' AS CODE,
+                       'visit' AS DESCRIPTION
+            ) TO '{tmp.as_posix()}' (FORMAT PARQUET)
+            """
+        )
+        store.put_bytes(
+            f"silver/aetna/medical/{submission_id}/atomic_month=2025-01/part-0000.parquet",
+            tmp.read_bytes(),
+        )
+
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": submission_id}}}},
+        engine,
+        store,
+    ).success
+
+    assert _execute_canonical(
+        {
+            "ops": {
+                "build_canonical_month_op": {
+                    "config": {"state": "MA", "file_type": "medical", "atomic_month": "2025-01"}
+                }
+            }
+        },
+        engine,
+        store,
+    ).success
+
+    result = _execute_canonical(
+        {
+            "ops": {
+                "build_canonical_month_op": {
+                    "config": {"state": "MA", "file_type": "medical", "atomic_month": "2025-01"}
+                }
+            }
+        },
+        engine,
+        store,
+    )
+    assert result.success
+
+    with engine.begin() as conn:
+        statuses = conn.execute(
+            text(
+                """
+                SELECT status
+                FROM canonical_month_build
+                WHERE state='MA' AND file_type='medical' AND atomic_month='2025-01'
+                ORDER BY started_at
+                """
+            )
+        ).fetchall()
+    assert [row.status for row in statuses][-1] == "SKIPPED"
+
+
+def test_canonical_correction_triggers_rebuild(env):
+    engine, store = env
+    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    sync_canonical_registry(build_asset_context(resources={"metadata_db": engine}))
+
+    layout_id = None
+    with engine.begin() as conn:
+        layout_id = conn.execute(
+            text(
+                "SELECT layout_id FROM layout_registry WHERE file_type='medical' AND layout_version='v1'"
+            )
+        ).scalar_one()
+
+    def _seed(submission_id: str, patient: str, ended_at: str):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO submission(
+                        submission_id, submitter_id, state, file_type, layout_id, coverage_start_month,
+                        coverage_end_month, received_at, status, grouping_method, inbox_prefix, raw_prefix,
+                        manifest_object_key, manifest_sha256, created_at, latest_validation_run_id
+                    ) VALUES (
+                        :submission_id, 'aetna', 'MA', 'medical', :layout_id, '202501',
+                        '202501', :received_at, 'VALIDATED', 'AUTO', 'inbox/x', 'raw/x',
+                        'raw/x/manifest.json', 'abc', :received_at, :validation_run_id
+                    )
+                    """
+                ),
+                {
+                    "submission_id": submission_id,
+                    "layout_id": layout_id,
+                    "received_at": ended_at,
+                    "validation_run_id": f"vr-{submission_id}",
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO validation_run(
+                        validation_run_id, submission_id, rule_set_id, started_at, ended_at, status,
+                        outcome, engine, engine_version, silver_prefix, total_rows, report_object_key, error_message
+                    ) VALUES (
+                        :validation_run_id, :submission_id, 'rules', :ended_at, :ended_at, 'SUCCEEDED',
+                        'PASS', 'duckdb', NULL, :silver_prefix, 1, NULL, NULL
+                    )
+                    """
+                ),
+                {
+                    "validation_run_id": f"vr-{submission_id}",
+                    "submission_id": submission_id,
+                    "ended_at": ended_at,
+                    "silver_prefix": f"silver/aetna/medical/{submission_id}",
+                },
+            )
+        with duckdb.connect() as con:
+            tmp = Path(f"/tmp/{submission_id}.parquet")
+            con.execute(
+                f"""
+                COPY (
+                    SELECT 'enc-{submission_id[:4]}' AS Id,
+                           '2025-01-01T00:00:00Z' AS START,
+                           '2025-01-01T01:00:00Z' AS STOP,
+                           '{patient}' AS PATIENT,
+                           'prov1' AS PROVIDER,
+                           'ORG' AS ORGANIZATION,
+                           'ambulatory' AS ENCOUNTERCLASS,
+                           '123' AS CODE,
+                           'visit' AS DESCRIPTION
+                ) TO '{tmp.as_posix()}' (FORMAT PARQUET)
+                """
+            )
+            store.put_bytes(
+                f"silver/aetna/medical/{submission_id}/atomic_month=2025-01/part-0000.parquet",
+                tmp.read_bytes(),
+            )
+
+    s1 = str(uuid.uuid4())
+    _seed(s1, "member-old", "2025-02-20T00:00:00+00:00")
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": s1}}}}, engine, store
+    ).success
+    assert _execute_canonical(_run_canonical_sensor(engine)[0].run_config, engine, store).success
+
+    with engine.begin() as conn:
+        first_fingerprint = conn.execute(
+            text(
+                "SELECT input_fingerprint FROM canonical_month_build WHERE status='SUCCEEDED' ORDER BY started_at DESC LIMIT 1"
+            )
+        ).scalar_one()
+
+    s2 = str(uuid.uuid4())
+    _seed(s2, "member-new", "2025-02-21T00:00:00+00:00")
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": s2}}}}, engine, store
+    ).success
+    requests = _run_canonical_sensor(engine)
+    assert requests
+    assert _execute_canonical(requests[0].run_config, engine, store).success
+
+    with engine.begin() as conn:
+        second_fingerprint = conn.execute(
+            text(
+                "SELECT input_fingerprint FROM canonical_month_build WHERE status='SUCCEEDED' ORDER BY started_at DESC LIMIT 1"
+            )
+        ).scalar_one()
+
+    assert second_fingerprint != first_fingerprint
+
+
+def test_canonical_mapping_differences_union(env):
+    engine, store = env
+    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    sync_canonical_registry(build_asset_context(resources={"metadata_db": engine}))
+
+    with engine.begin() as conn:
+        base_layout_id = conn.execute(
+            text(
+                "SELECT layout_id FROM layout_registry WHERE file_type='medical' AND layout_version='v1'"
+            )
+        ).scalar_one()
+        schema_id = conn.execute(
+            text(
+                "SELECT canonical_schema_id FROM canonical_schema WHERE file_type='medical' AND schema_version='v1'"
+            )
+        ).scalar_one()
+        alt_layout_id = str(uuid.uuid4())
+        conn.execute(
+            text(
+                """
+                INSERT INTO layout_registry(layout_id, file_type, layout_version, schema_json, parser_config_json, status)
+                VALUES (:layout_id, 'medical', 'v2', :schema_json, '{}', 'ACTIVE')
+                """
+            ),
+            {
+                "layout_id": alt_layout_id,
+                "schema_json": json.dumps({"columns": []}),
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO canonical_mapping(mapping_id, layout_id, canonical_schema_id, mapping_version, mapping_json, status, created_at)
+                VALUES (:mapping_id, :layout_id, :schema_id, 'v1', :mapping_json, 'ACTIVE', :created_at)
+                """
+            ),
+            {
+                "mapping_id": str(uuid.uuid4()),
+                "layout_id": alt_layout_id,
+                "schema_id": schema_id,
+                "mapping_json": json.dumps(
+                    {
+                        "member_id": {"source": "PATIENT"},
+                        "encounter_id": {"source": "Id"},
+                        "provider_id": {"const": "CONSTPROV"},
+                        "service_start_date": {"source": "START", "cast": "DATE"},
+                        "service_end_date": {"source": "STOP", "cast": "DATE"},
+                        "encounter_class": {"source": "ENCOUNTERCLASS"},
+                        "code": {"source": "CODE"},
+                        "description": {"source": "DESCRIPTION"},
+                    }
+                ),
+                "created_at": "2025-02-20T00:00:00+00:00",
+            },
+        )
+
+    def _seed(submission_id: str, submitter_id: str, layout_id: str):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO submission(
+                        submission_id, submitter_id, state, file_type, layout_id, coverage_start_month,
+                        coverage_end_month, received_at, status, grouping_method, inbox_prefix, raw_prefix,
+                        manifest_object_key, manifest_sha256, created_at, latest_validation_run_id
+                    ) VALUES (
+                        :submission_id, :submitter_id, 'MA', 'medical', :layout_id, '202501',
+                        '202501', '2025-02-20T00:00:00+00:00', 'VALIDATED', 'AUTO', 'inbox/x', 'raw/x',
+                        'raw/x/manifest.json', 'abc', '2025-02-20T00:00:00+00:00', :validation_run_id
+                    )
+                    """
+                ),
+                {
+                    "submission_id": submission_id,
+                    "submitter_id": submitter_id,
+                    "layout_id": layout_id,
+                    "validation_run_id": f"vr-{submission_id}",
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO validation_run(
+                        validation_run_id, submission_id, rule_set_id, started_at, ended_at, status,
+                        outcome, engine, engine_version, silver_prefix, total_rows, report_object_key, error_message
+                    ) VALUES (
+                        :validation_run_id, :submission_id, 'rules', '2025-02-20T00:00:00+00:00',
+                        '2025-02-20T00:00:00+00:00', 'SUCCEEDED', 'PASS', 'duckdb', NULL,
+                        :silver_prefix, 1, NULL, NULL
+                    )
+                    """
+                ),
+                {
+                    "validation_run_id": f"vr-{submission_id}",
+                    "submission_id": submission_id,
+                    "silver_prefix": f"silver/{submitter_id}/medical/{submission_id}",
+                },
+            )
+        with duckdb.connect() as con:
+            tmp = Path(f"/tmp/{submission_id}.parquet")
+            con.execute(
+                f"""
+                COPY (
+                    SELECT '{submission_id[:6]}' AS Id,
+                           '2025-01-01T00:00:00Z' AS START,
+                           '2025-01-01T01:00:00Z' AS STOP,
+                           '{submitter_id}-m' AS PATIENT,
+                           'prov1' AS PROVIDER,
+                           'ORG' AS ORGANIZATION,
+                           'ambulatory' AS ENCOUNTERCLASS,
+                           '123' AS CODE,
+                           'visit' AS DESCRIPTION
+                ) TO '{tmp.as_posix()}' (FORMAT PARQUET)
+                """
+            )
+            store.put_bytes(
+                f"silver/{submitter_id}/medical/{submission_id}/atomic_month=2025-01/part-0000.parquet",
+                tmp.read_bytes(),
+            )
+
+    s1 = str(uuid.uuid4())
+    s2 = str(uuid.uuid4())
+    _seed(s1, "aetna", base_layout_id)
+    _seed(s2, "cigna", alt_layout_id)
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": s1}}}}, engine, store
+    ).success
+    assert _execute_submitter_gold(
+        {"ops": {"build_submitter_gold_op": {"config": {"submission_id": s2}}}}, engine, store
+    ).success
+
+    requests = _run_canonical_sensor(engine)
+    assert requests
+    assert _execute_canonical(requests[0].run_config, engine, store).success
+    rows, cols = _canonical_month_rows_local(store, "MA", "medical", "2025-01")
+    provider_values = {row[cols.index("provider_id")] for row in rows}
+    assert provider_values == {"prov1", "CONSTPROV"}

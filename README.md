@@ -1,11 +1,14 @@
-# Health Data Ingestion Platform - Phase 2 Parse to Silver
+# Health Data Ingestion Platform
 
-This repository includes Dagster orchestration, Postgres metadata tracking, MinIO-backed S3-compatible object storage, Alembic migrations, and integration tests for intake registration and parsing to silver Parquet.
+This repository includes Dagster orchestration, Postgres/SQLite metadata tracking, MinIO-backed S3-compatible object storage, Alembic migrations, and integration tests spanning intake through Gold-C canonical output.
 
 ## Pipeline state machine
 
 - Intake: `RECEIVED` → `READY_FOR_PARSE` (or `NEEDS_REVIEW` for unknown classifications)
-- Parse (P2): `READY_FOR_PARSE` → `PARSED` on success, `PARSE_FAILED` on hard failures (missing files/layout, parser exceptions)
+- Parse (P2): `READY_FOR_PARSE` → `PARSED` on success, `PARSE_FAILED` on hard failures
+- Validation (P3): `PARSED` → `VALIDATED`, `VALIDATED_WITH_WARNINGS`, or `VALIDATION_FAILED`
+- Submitter Gold (P4): winner chosen per `(state, file_type, submitter_id, atomic_month)`
+- Canonical Gold (P5): statewide canonical partition built per `(state, file_type, atomic_month)`
 
 ## Storage conventions
 
@@ -17,97 +20,55 @@ Raw:
 Silver:
 
 - `silver/{submitter_id}/{file_type}/{submission_id}/atomic_month=YYYY-MM/part-*.parquet`
-- `silver/{submitter_id}/{file_type}/{submission_id}/atomic_month=__unknown__/part-*.parquet` (fallback when anchor date is absent/unparseable)
+- `silver/{submitter_id}/{file_type}/{submission_id}/atomic_month=__unknown__/part-*.parquet`
 - `silver/{submitter_id}/{file_type}/{submission_id}/parse_report.json`
 
-Parser output also appends lineage columns in Parquet:
+Submitter gold (P4):
 
-- `submission_id`
-- `source_object_key`
-- `ingested_at`
-- `layout_id`
-- `layout_version`
+- `gold_submitter/{state}/{file_type}/{submitter_id}/atomic_month=YYYY-MM/part-*.parquet`
 
-## Intake behavior
+Canonical statewide gold (P5):
 
-Submitters drop files under:
+- `gold_canonical/{state}/{file_type}/atomic_month=YYYY-MM/part-*.parquet`
 
-- `inbox/{submitter_id}/{filename}`
-- optional grouped drops: `inbox/{submitter_id}/{drop_folder}/{filename}`
+Canonical output includes canonical schema fields plus lineage columns:
 
-Supported default naming pattern:
+- `state`, `file_type`, `atomic_month`, `submitter_id`
+- `source_submission_id`, `source_layout_id`
+- `canonical_schema_version`, `canonical_built_at`
 
-- `{file_type}_YYYYMM_YYYYMM.(txt|csv|gz)`
-- file types: `medical`, `pharmacy`, `members`, `enrollment`
+## Canonical registry + mappings
 
-Grouping closes using:
+Canonical registry is data-driven from JSON under:
 
-1. **Marker-based**: `_SUCCESS` closes the folder immediately.
-2. **Quiescence-based**: `now - last_changed_at >= INTAKE_QUIESCENCE_MINUTES` (default `10`).
+- `services/dagster/src/health_platform/canonical/schemas/{file_type}/v*.json`
+- `services/dagster/src/health_platform/canonical/mappings/{file_type}/{layout_version}/v*.json`
 
-Closed groups are moved to immutable raw storage and registered in metadata DB.
+`sync_canonical_registry` upserts:
 
-## Parse engine (DuckDB)
+- `canonical_schema` (`file_type`, schema version, columns)
+- `canonical_mapping` (`layout_id` + schema mapping version)
 
-P2 uses a DuckDB-first parser engine (swappable later):
+To add a new layout mapping:
 
-- Loads layout contracts from `layout_registry` (`schema_json`, `parser_config_json`)
-- Applies coercion-safe typing casts
-- Counts invalid casts and row rejects without failing the whole submission
-- Computes `atomic_month` from `anchor_date_column` for partitioned silver writes
-- Writes parse metrics to metadata tables (`parse_run`, `parse_file_metrics`, `parse_column_metrics`)
+1. Add/verify the layout in `layouts/` and sync layout registry.
+2. Add mapping JSON for that layout version and canonical schema version.
+3. Run `sync_canonical_registry` asset.
 
-For environments where DuckDB `httpfs` is not available, parsing falls back to local staging reads while preserving the same output contract.
+## Canonical rebuild trigger flow
 
-## Object storage configuration (S3-compatible only)
+- P4 `build_submitter_gold_job` enqueues rows in `canonical_rebuild_queue` when month winners change.
+- `canonical_rebuild_sensor` drains unprocessed queue rows, groups by `(state,file_type,atomic_month)`, and triggers `build_canonical_month_job`.
+- Canonical builds compute an input fingerprint over winners + mapping/schema identity.
+  - unchanged fingerprint => `SKIPPED`
+  - changed fingerprint => overwrite month partition and record `SUCCEEDED`
+- Failed builds are recorded and queue rows are marked processed; retries happen by re-enqueueing.
 
-All runtime object operations use a unified S3-compatible API:
-
-- `S3_ENDPOINT_URL` (MinIO endpoint in dev, blank for AWS S3)
-- `S3_ACCESS_KEY_ID`
-- `S3_SECRET_ACCESS_KEY`
-- `S3_REGION`
-- `S3_BUCKET`
-
-There is no local filesystem object-store runtime mode.
-
-## Running locally with Docker
-
-```bash
-docker compose up --build
-```
-
-## Running in dev mode (no Docker)
-
-```bash
-./dev_up.sh
-```
-
-`dev_up.sh` starts MinIO, creates the configured bucket, runs migrations, and starts Dagster with the same S3 code path used by docker-compose.
-
-## Triggering parse in Dagster
-
-- `ready_for_parse_sensor` scans for `submission.status = READY_FOR_PARSE` and emits deduplicated run keys.
-- `parse_submission_job` parses one submission run (or can be manually launched with `ops.parse_submission_op.config.submission_id`).
-
-## Inspecting silver Parquet with DuckDB CLI
-
-```bash
-duckdb -c "SELECT atomic_month, count(*) FROM read_parquet('s3://$S3_BUCKET/silver/acme/medical/<submission_id>/atomic_month=*/**/*.parquet') GROUP BY 1"
-```
-
-## Tests
+## Running checks
 
 ```bash
 cd services/dagster
+ruff format --check .
+ruff check .
 pytest -q
 ```
-
-## Add a new filename convention
-
-1. Implement a class deriving from `FilenameConvention` in intake modules.
-2. Implement:
-   - `name`
-   - `match(filename)`
-   - `parse(filename) -> ParsedFilename`
-3. Register it in a `ConventionRegistry`.

@@ -1,0 +1,16 @@
+{
+  "file_type": "members",
+  "layout_version": "v1",
+  "schema_version": "v1",
+  "mapping_version": "v1",
+  "status": "ACTIVE",
+  "mapping": {
+    "member_id": {"source": "Id"},
+    "birth_date": {"source": "BIRTHDATE", "cast": "DATE"},
+    "death_date": {"source": "DEATHDATE", "cast": "DATE"},
+    "gender": {"source": "GENDER"},
+    "race": {"source": "RACE"},
+    "ethnicity": {"source": "ETHNICITY"},
+    "zip": {"source": "ZIP"}
+  }
+}
