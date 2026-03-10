@@ -230,7 +230,7 @@ def load_rules_for_set(metadata_db, rule_set_id: str) -> list[ResolvedRule]:
                     r.sql_template
                 FROM validation_rule_set_rule rsr
                 JOIN validation_rule r ON r.rule_id = rsr.rule_id
-                WHERE rsr.rule_set_id = :rule_set_id AND rsr.enabled = 1
+                WHERE rsr.rule_set_id = :rule_set_id AND rsr.enabled = TRUE
                 ORDER BY r.name, r.rule_id
                 """
             ),

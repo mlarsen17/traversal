@@ -1,0 +1,22 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Dagster Postgres",
+      "Group": "Traversal",
+      "Host": "dagster_postgres",
+      "Port": 5432,
+      "MaintenanceDB": "dagster",
+      "Username": "dagster",
+      "SSLMode": "prefer"
+    },
+    "2": {
+      "Name": "Metadata Postgres",
+      "Group": "Traversal",
+      "Host": "metadata_postgres",
+      "Port": 5432,
+      "MaintenanceDB": "metadata",
+      "Username": "metadata",
+      "SSLMode": "prefer"
+    }
+  }
+}

@@ -97,7 +97,7 @@ def seed_validation_rule_sets(context) -> MaterializeResult:
                         rule_set_id, rule_id, enabled, severity_override,
                         threshold_type_override, threshold_value_override, params_override_json
                     ) VALUES (
-                        :rule_set_id, :rule_id, 1, NULL, NULL, NULL, NULL
+                        :rule_set_id, :rule_id, TRUE, NULL, NULL, NULL, NULL
                     )
                     """
                 ),
