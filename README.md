@@ -64,6 +64,55 @@ To add a new layout mapping:
   - changed fingerprint => overwrite month partition and record `SUCCEEDED`
 - Failed builds are recorded and queue rows are marked processed; retries happen by re-enqueueing.
 
+## Serving schema (dashboard layer)
+
+Alembic revision `0008_p6_serving_redash` adds schema `serving` and the initial reporting views:
+
+- `serving.submission_overview`
+- `serving.validation_findings`
+- `serving.submitter_month_status`
+- `serving.canonical_month_status`
+- `serving.dashboard_kpis_daily`
+- `serving.parse_column_health`
+- `serving.validation_summary`
+- `serving.submission_timeline`
+
+View SQL is stored under `services/migrations/sql/serving/` and loaded by migration.
+
+## Redash (docker compose)
+
+Compose now includes:
+
+- `redash_postgres` (Redash internal metadata DB)
+- `redash_redis`
+- `redash_init`
+- `redash_server`
+- `redash_worker`
+- `redash_scheduler`
+- `metadata_grants` (creates/grants `redash_reader` on `serving` schema)
+
+Start the full stack:
+
+```bash
+docker compose up -d --build
+```
+
+Redash UI: `http://localhost:5000`
+
+Platform Postgres datasource settings inside Redash:
+
+- Host: `metadata_postgres`
+- Port: `5432`
+- Database: `${METADATA_PG_DB}`
+- User: `redash_reader`
+- Password: `${REDASH_READER_PASSWORD}`
+
+Connection smoke query:
+
+```sql
+SELECT * FROM serving.submission_overview LIMIT 5;
+```
+
 ## Running checks
 
 ```bash

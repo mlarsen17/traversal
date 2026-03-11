@@ -31,6 +31,30 @@ services:
       timeout: 5s
       retries: 20
 
+  redash_postgres:
+    image: postgres:15-alpine
+    container_name: redash_postgres
+    environment:
+      POSTGRES_USER: ${REDASH_PG_USER}
+      POSTGRES_PASSWORD: ${REDASH_PG_PASSWORD}
+      POSTGRES_DB: ${REDASH_PG_DB}
+    volumes:
+      - redash_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${REDASH_PG_USER} -d ${REDASH_PG_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redash_redis:
+    image: redis:7-alpine
+    container_name: redash_redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   pgadmin:
     image: dpage/pgadmin4:8
     container_name: pgadmin
@@ -95,6 +119,100 @@ services:
     command: ["alembic", "upgrade", "head"]
     restart: "no"
 
+  metadata_grants:
+    image: postgres:15-alpine
+    container_name: metadata_grants
+    env_file:
+      - .env
+    depends_on:
+      metadata_postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    volumes:
+      - ./infra/postgres/grant_redash_reader.sh:/scripts/grant_redash_reader.sh:ro
+    command: ["/bin/sh", "/scripts/grant_redash_reader.sh"]
+    restart: "no"
+
+  redash_init:
+    image: redash/redash:10.1.0.b50633
+    container_name: redash_init
+    env_file:
+      - .env
+    depends_on:
+      redash_postgres:
+        condition: service_healthy
+      redash_redis:
+        condition: service_healthy
+    environment:
+      REDASH_DATABASE_URL: postgresql://${REDASH_PG_USER}:${REDASH_PG_PASSWORD}@redash_postgres:5432/${REDASH_PG_DB}
+      REDASH_REDIS_URL: redis://redash_redis:6379/0
+      REDASH_COOKIE_SECRET: ${REDASH_COOKIE_SECRET}
+      REDASH_SECRET_KEY: ${REDASH_SECRET_KEY}
+    command: ["create_db"]
+    restart: "no"
+
+  redash_server:
+    image: redash/redash:10.1.0.b50633
+    container_name: redash_server
+    env_file:
+      - .env
+    depends_on:
+      redash_postgres:
+        condition: service_healthy
+      redash_redis:
+        condition: service_healthy
+      redash_init:
+        condition: service_completed_successfully
+      metadata_grants:
+        condition: service_completed_successfully
+    ports:
+      - "5000:5000"
+    environment:
+      REDASH_DATABASE_URL: postgresql://${REDASH_PG_USER}:${REDASH_PG_PASSWORD}@redash_postgres:5432/${REDASH_PG_DB}
+      REDASH_REDIS_URL: redis://redash_redis:6379/0
+      REDASH_COOKIE_SECRET: ${REDASH_COOKIE_SECRET}
+      REDASH_SECRET_KEY: ${REDASH_SECRET_KEY}
+    command: ["server"]
+
+  redash_worker:
+    image: redash/redash:10.1.0.b50633
+    container_name: redash_worker
+    env_file:
+      - .env
+    depends_on:
+      redash_postgres:
+        condition: service_healthy
+      redash_redis:
+        condition: service_healthy
+      redash_init:
+        condition: service_completed_successfully
+    environment:
+      REDASH_DATABASE_URL: postgresql://${REDASH_PG_USER}:${REDASH_PG_PASSWORD}@redash_postgres:5432/${REDASH_PG_DB}
+      REDASH_REDIS_URL: redis://redash_redis:6379/0
+      REDASH_COOKIE_SECRET: ${REDASH_COOKIE_SECRET}
+      REDASH_SECRET_KEY: ${REDASH_SECRET_KEY}
+    command: ["worker"]
+
+  redash_scheduler:
+    image: redash/redash:10.1.0.b50633
+    container_name: redash_scheduler
+    env_file:
+      - .env
+    depends_on:
+      redash_postgres:
+        condition: service_healthy
+      redash_redis:
+        condition: service_healthy
+      redash_init:
+        condition: service_completed_successfully
+    environment:
+      REDASH_DATABASE_URL: postgresql://${REDASH_PG_USER}:${REDASH_PG_PASSWORD}@redash_postgres:5432/${REDASH_PG_DB}
+      REDASH_REDIS_URL: redis://redash_redis:6379/0
+      REDASH_COOKIE_SECRET: ${REDASH_COOKIE_SECRET}
+      REDASH_SECRET_KEY: ${REDASH_SECRET_KEY}
+    command: ["scheduler"]
+
   dagster_webserver:
     build:
       context: .
@@ -154,6 +272,7 @@ services:
 volumes:
   dagster_pg_data:
   metadata_pg_data:
+  redash_pg_data:
   pgadmin_data:
   minio_data:
   dagster_home:

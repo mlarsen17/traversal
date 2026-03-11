@@ -12,6 +12,7 @@ RUN apt-get update \
 COPY services/migrations/alembic.ini /app/alembic.ini
 COPY services/migrations/alembic /app/alembic
 COPY services/migrations/app /app/app
+COPY services/migrations/sql /app/sql
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir sqlalchemy==2.0.37 alembic==1.14.1 psycopg2-binary==2.9.10
