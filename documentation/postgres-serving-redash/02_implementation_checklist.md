@@ -4,14 +4,15 @@
 
 - Completed:
   - `0008_p6_serving_redash` Alembic revision after `0007_p5_canonical_gold`
+  - `0009_p6_serving_perf_indexes` Alembic revision for serving-related performance indexes
   - `serving` schema creation and all listed view definitions (core + optional) under `services/migrations/sql/serving/`
   - Migration-driven view lifecycle (upgrade creates/replaces views; downgrade drops views then schema)
   - Docker Compose Redash stack (`redash_postgres`, `redash_redis`, `redash_init`, `redash_server`, `redash_worker`, `redash_scheduler`)
+  - First-boot Compose automation via `redash_bootstrap` one-shot service (admin user, datasource, content bootstrap)
   - Dedicated read-only role provisioning for BI (`redash_reader`) with grants on `serving` via `metadata_grants` service
-- Not automated in code yet:
-  - Redash saved queries, dashboards, schedules, and alerts (still manual in Redash UI/API)
-  - Performance tuning/index adjustments and EXPLAIN baseline capture
-  - End-to-end connectivity tests executed in running containers
+  - Redash provisioning automation for saved queries, dashboards, schedules, and alerts via `infra/redash/provisioning/bootstrap_redash.py`
+  - Performance baseline automation (`infra/tests/serving_performance_baseline.sh`) using `EXPLAIN (ANALYZE, BUFFERS)`
+  - End-to-end connectivity automation (`infra/tests/serving_connectivity_smoke.sh`) including read-only permission enforcement checks
 
 ## Scope
 

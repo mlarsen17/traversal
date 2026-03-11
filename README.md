@@ -113,6 +113,36 @@ Connection smoke query:
 SELECT * FROM serving.submission_overview LIMIT 5;
 ```
 
+## Serving + Redash automation
+
+Automated checks and provisioning are available via `Makefile`:
+
+```bash
+make up-detached
+make serving-connectivity-smoke
+make serving-perf-baseline
+```
+
+Redash provisioning (saved queries, dashboards, schedules, alerts):
+
+- Automatically runs on `docker compose up` through one-shot service `redash_bootstrap`.
+- First boot creates/updates:
+  - admin user (`REDASH_ADMIN_EMAIL`, `REDASH_ADMIN_PASSWORD`)
+  - platform datasource (`REDASH_PLATFORM_DS_NAME`)
+  - initial queries, dashboards, schedules, alerts
+- You can rerun provisioning manually:
+
+```bash
+make redash-bootstrap
+```
+
+Provisioning assets:
+
+- Script: `infra/redash/provisioning/bootstrap_redash.py`
+- Query SQL: `infra/redash/provisioning/queries/*.sql`
+- Performance baseline SQL: `infra/tests/sql/serving_explain_baseline.sql`
+- Connectivity smoke test: `infra/tests/serving_connectivity_smoke.sh`
+
 ## Running checks
 
 ```bash

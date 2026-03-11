@@ -1,0 +1,286 @@
+Timing is on.
+                                                                                                                                                                                                                                                                    QUERY PLAN                                                                                                                                                                                                                                                                     
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ HashAggregate  (cost=124.23..125.73 rows=150 width=40) (actual time=0.006..0.009 rows=0 loops=1)
+   Output: s.status, count(*)
+   Group Key: s.status
+   Batches: 1  Memory Usage: 40kB
+   ->  Hash Left Join  (cost=108.74..121.98 rows=150 width=696) (actual time=0.004..0.007 rows=0 loops=1)
+         Output: NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::timestamp with time zone, s.status, NULL::text, NULL::text, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::numeric, NULL::numeric, NULL::numeric, NULL::text, NULL::text, NULL::text, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text, NULL::text, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::bigint
+         Hash Cond: (s.submission_id = ranked_2.submission_id)
+         ->  Hash Left Join  (cost=63.43..76.09 rows=150 width=64) (actual time=0.004..0.006 rows=0 loops=1)
+               Output: s.status, s.submission_id
+               Hash Cond: (s.submission_id = ranked_1.submission_id)
+               ->  Hash Left Join  (cost=35.87..47.95 rows=150 width=64) (actual time=0.003..0.006 rows=0 loops=1)
+                     Output: s.status, s.submission_id
+                     Hash Cond: (s.submission_id = ranked.submission_id)
+                     ->  Seq Scan on public.submission s  (cost=0.00..11.50 rows=150 width=96) (actual time=0.003..0.003 rows=0 loops=1)
+                           Output: s.submission_id, s.submitter_id, s.state, s.file_type, s.layout_id, s.coverage_start_month, s.coverage_end_month, s.received_at, s.status, s.grouping_method, s.inbox_prefix, s.raw_prefix, s.manifest_object_key, s.manifest_sha256, s.group_fingerprint, s.latest_validation_run_id
+                     ->  Hash  (cost=35.84..35.84 rows=2 width=64) (never executed)
+                           Output: ranked.submission_id, ranked.parse_run_id
+                           ->  Subquery Scan on ranked  (cost=25.34..35.84 rows=2 width=64) (never executed)
+                                 Output: ranked.submission_id, ranked.parse_run_id
+                                 Filter: (ranked.rn = 1)
+                                 ->  WindowAgg  (cost=25.34..32.09 rows=300 width=248) (never executed)
+                                       Output: pr.parse_run_id, pr.submission_id, pr.started_at, NULL::timestamp with time zone, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, row_number() OVER (?)
+                                       Run Condition: (row_number() OVER (?) <= 1)
+                                       ->  Sort  (cost=25.34..26.09 rows=300 width=72) (never executed)
+                                             Output: pr.parse_run_id, pr.submission_id, pr.started_at
+                                             Sort Key: pr.submission_id, pr.started_at DESC, pr.parse_run_id DESC
+                                             ->  Seq Scan on public.parse_run pr  (cost=0.00..13.00 rows=300 width=72) (never executed)
+                                                   Output: pr.parse_run_id, pr.submission_id, pr.started_at
+               ->  Hash  (cost=27.55..27.55 rows=1 width=64) (never executed)
+                     Output: ranked_1.submission_id, ranked_1.validation_run_id
+                     ->  Subquery Scan on ranked_1  (cost=20.20..27.55 rows=1 width=64) (never executed)
+                           Output: ranked_1.submission_id, ranked_1.validation_run_id
+                           Filter: (ranked_1.rn = 1)
+                           ->  WindowAgg  (cost=20.20..24.92 rows=210 width=352) (never executed)
+                                 Output: vr.validation_run_id, vr.submission_id, NULL::text, vr.started_at, NULL::timestamp with time zone, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::bigint, NULL::text, NULL::text, row_number() OVER (?)
+                                 Run Condition: (row_number() OVER (?) <= 1)
+                                 ->  Sort  (cost=20.20..20.72 rows=210 width=72) (never executed)
+                                       Output: vr.validation_run_id, vr.submission_id, vr.started_at
+                                       Sort Key: vr.submission_id, vr.started_at DESC, vr.validation_run_id DESC
+                                       ->  Seq Scan on public.validation_run vr  (cost=0.00..12.10 rows=210 width=72) (never executed)
+                                             Output: vr.validation_run_id, vr.submission_id, vr.started_at
+         ->  Hash  (cost=45.29..45.29 rows=2 width=32) (never executed)
+               Output: ranked_2.submission_id
+               ->  Subquery Scan on ranked_2  (cost=31.29..45.29 rows=2 width=32) (never executed)
+                     Output: ranked_2.submission_id
+                     Filter: (ranked_2.rn = 1)
+                     ->  WindowAgg  (cost=31.29..40.29 rows=400 width=184) (never executed)
+                           Output: sgb.submitter_gold_build_id, sgb.submission_id, sgb.started_at, NULL::timestamp with time zone, NULL::text, NULL::text, NULL::text, row_number() OVER (?)
+                           Run Condition: (row_number() OVER (?) <= 1)
+                           ->  Sort  (cost=31.29..32.29 rows=400 width=72) (never executed)
+                                 Output: sgb.submitter_gold_build_id, sgb.submission_id, sgb.started_at
+                                 Sort Key: sgb.submission_id, sgb.started_at DESC, sgb.submitter_gold_build_id DESC
+                                 ->  Seq Scan on public.submitter_gold_build sgb  (cost=0.00..14.00 rows=400 width=72) (never executed)
+                                       Output: sgb.submitter_gold_build_id, sgb.submission_id, sgb.started_at
+ Planning:
+   Buffers: shared hit=430
+ Planning Time: 3.177 ms
+ Execution Time: 0.247 ms
+(58 rows)
+
+Time: 9.209 ms
+                                                                                                                                                                        QUERY PLAN                                                                                                                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort  (cost=157.75..158.58 rows=333 width=36) (actual time=0.158..0.163 rows=31 loops=1)
+   Output: dashboard_kpis_daily.day, dashboard_kpis_daily.submissions_received, dashboard_kpis_daily.parse_succeeded, dashboard_kpis_daily.validation_runs_failed, dashboard_kpis_daily.canonical_failed
+   Sort Key: dashboard_kpis_daily.day
+   Sort Method: quicksort  Memory: 27kB
+   Buffers: shared hit=3
+   ->  Subquery Scan on dashboard_kpis_daily  (cost=96.86..143.80 rows=333 width=36) (actual time=0.088..0.123 rows=31 loops=1)
+         Output: dashboard_kpis_daily.day, dashboard_kpis_daily.submissions_received, dashboard_kpis_daily.parse_succeeded, dashboard_kpis_daily.validation_runs_failed, dashboard_kpis_daily.canonical_failed
+         ->  Hash Left Join  (cost=96.86..140.47 rows=333 width=108) (actual time=0.087..0.119 rows=31 loops=1)
+               Output: d.day, COALESCE(sk.submissions_received, '0'::bigint), COALESCE(pk.parse_succeeded, '0'::bigint), NULL::bigint, NULL::bigint, COALESCE(vk.validation_runs_failed, '0'::bigint), NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, COALESCE(ck.canonical_failed, '0'::bigint)
+               Inner Unique: true
+               Hash Cond: (d.day = ck.day)
+               CTE bounds
+                 ->  Aggregate  (cost=13.00..13.03 rows=1 width=12) (actual time=0.005..0.005 rows=1 loops=1)
+                       Output: COALESCE((min(date(s_1.received_at)))::timestamp without time zone, (CURRENT_DATE - '30 days'::interval)), GREATEST(COALESCE(max(date(s_1.received_at)), CURRENT_DATE), CURRENT_DATE)
+                       ->  Seq Scan on public.submission s_1  (cost=0.00..11.50 rows=150 width=8) (actual time=0.002..0.002 rows=0 loops=1)
+                             Output: s_1.submission_id, s_1.submitter_id, s_1.state, s_1.file_type, s_1.layout_id, s_1.coverage_start_month, s_1.coverage_end_month, s_1.received_at, s_1.status, s_1.grouping_method, s_1.inbox_prefix, s_1.raw_prefix, s_1.manifest_object_key, s_1.manifest_sha256, s_1.group_fingerprint, s_1.latest_validation_run_id
+               ->  Hash Left Join  (cost=62.05..104.76 rows=333 width=28) (actual time=0.071..0.097 rows=31 loops=1)
+                     Output: d.day, sk.submissions_received, pk.parse_succeeded, vk.validation_runs_failed
+                     Inner Unique: true
+                     Hash Cond: (d.day = vk.day)
+                     ->  Hash Left Join  (cost=40.89..82.71 rows=333 width=20) (actual time=0.055..0.077 rows=31 loops=1)
+                           Output: d.day, sk.submissions_received, pk.parse_succeeded
+                           Inner Unique: true
+                           Hash Cond: (d.day = pk.day)
+                           ->  Hash Left Join  (cost=17.91..58.83 rows=333 width=12) (actual time=0.036..0.054 rows=31 loops=1)
+                                 Output: d.day, sk.submissions_received
+                                 Inner Unique: true
+                                 Hash Cond: (d.day = sk.day)
+                                 ->  Subquery Scan on d  (cost=0.04..40.06 rows=333 width=4) (actual time=0.020..0.033 rows=31 loops=1)
+                                       Output: d.day
+                                       Filter: (d.day >= (CURRENT_DATE - '30 days'::interval))
+                                       ->  Result  (cost=0.04..22.56 rows=1000 width=4) (actual time=0.019..0.027 rows=31 loops=1)
+                                             Output: ((generate_series($1, ($2)::timestamp without time zone, '1 day'::interval)))::date
+                                             InitPlan 2 (returns $1)
+                                               ->  CTE Scan on bounds b  (cost=0.00..0.02 rows=1 width=8) (actual time=0.008..0.009 rows=1 loops=1)
+                                                     Output: b.min_day
+                                             InitPlan 3 (returns $2)
+                                               ->  CTE Scan on bounds b_1  (cost=0.00..0.02 rows=1 width=4) (actual time=0.000..0.001 rows=1 loops=1)
+                                                     Output: b_1.max_day
+                                             ->  ProjectSet  (cost=0.00..5.02 rows=1000 width=8) (actual time=0.018..0.023 rows=31 loops=1)
+                                                   Output: generate_series($1, ($2)::timestamp without time zone, '1 day'::interval)
+                                                   ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1 loops=1)
+                                 ->  Hash  (cost=16.00..16.00 rows=150 width=12) (actual time=0.003..0.003 rows=0 loops=1)
+                                       Output: sk.submissions_received, sk.day
+                                       Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                       ->  Subquery Scan on sk  (cost=12.62..16.00 rows=150 width=12) (actual time=0.002..0.003 rows=0 loops=1)
+                                             Output: sk.submissions_received, sk.day
+                                             ->  HashAggregate  (cost=12.62..14.50 rows=150 width=12) (actual time=0.002..0.002 rows=0 loops=1)
+                                                   Output: (date(s.received_at)), count(*)
+                                                   Group Key: date(s.received_at)
+                                                   Batches: 1  Memory Usage: 40kB
+                                                   ->  Seq Scan on public.submission s  (cost=0.00..11.88 rows=150 width=4) (actual time=0.001..0.001 rows=0 loops=1)
+                                                         Output: date(s.received_at)
+                           ->  Hash  (cost=20.48..20.48 rows=200 width=12) (actual time=0.003..0.003 rows=0 loops=1)
+                                 Output: pk.parse_succeeded, pk.day
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                 ->  Subquery Scan on pk  (cost=15.98..20.48 rows=200 width=12) (actual time=0.003..0.003 rows=0 loops=1)
+                                       Output: pk.parse_succeeded, pk.day
+                                       ->  HashAggregate  (cost=15.98..18.48 rows=200 width=20) (actual time=0.002..0.002 rows=0 loops=1)
+                                             Output: (date(pr.ended_at)), count(*) FILTER (WHERE (pr.status = 'SUCCEEDED'::text)), NULL::bigint
+                                             Group Key: date(pr.ended_at)
+                                             Batches: 1  Memory Usage: 40kB
+                                             ->  Seq Scan on public.parse_run pr  (cost=0.00..13.74 rows=298 width=36) (actual time=0.002..0.002 rows=0 loops=1)
+                                                   Output: date(pr.ended_at), pr.status
+                                                   Filter: (pr.ended_at IS NOT NULL)
+                     ->  Hash  (cost=18.67..18.67 rows=199 width=12) (actual time=0.002..0.002 rows=0 loops=1)
+                           Output: vk.validation_runs_failed, vk.day
+                           Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                           ->  Subquery Scan on vk  (cost=14.19..18.67 rows=199 width=12) (actual time=0.002..0.002 rows=0 loops=1)
+                                 Output: vk.validation_runs_failed, vk.day
+                                 ->  HashAggregate  (cost=14.19..16.68 rows=199 width=44) (actual time=0.002..0.002 rows=0 loops=1)
+                                       Output: (date(vr.ended_at)), NULL::bigint, count(*) FILTER (WHERE (vr.status = 'FAILED'::text)), NULL::bigint, NULL::bigint, NULL::bigint
+                                       Group Key: date(vr.ended_at)
+                                       Batches: 1  Memory Usage: 40kB
+                                       ->  Seq Scan on public.validation_run vr  (cost=0.00..12.62 rows=209 width=36) (actual time=0.001..0.001 rows=0 loops=1)
+                                             Output: date(vr.ended_at), vr.status
+                                             Filter: (vr.ended_at IS NOT NULL)
+               ->  Hash  (cost=19.29..19.29 rows=200 width=12) (actual time=0.002..0.002 rows=0 loops=1)
+                     Output: ck.canonical_failed, ck.day
+                     Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                     ->  Subquery Scan on ck  (cost=14.79..19.29 rows=200 width=12) (actual time=0.002..0.002 rows=0 loops=1)
+                           Output: ck.canonical_failed, ck.day
+                           ->  HashAggregate  (cost=14.79..17.29 rows=200 width=28) (actual time=0.002..0.002 rows=0 loops=1)
+                                 Output: (date(cmb.ended_at)), NULL::bigint, NULL::bigint, count(*) FILTER (WHERE (cmb.status = 'FAILED'::text))
+                                 Group Key: date(cmb.ended_at)
+                                 Batches: 1  Memory Usage: 40kB
+                                 ->  Seq Scan on public.canonical_month_build cmb  (cost=0.00..13.00 rows=239 width=36) (actual time=0.001..0.001 rows=0 loops=1)
+                                       Output: date(cmb.ended_at), cmb.status
+                                       Filter: (cmb.ended_at IS NOT NULL)
+ Planning:
+   Buffers: shared hit=130
+ Planning Time: 1.208 ms
+ Execution Time: 0.467 ms
+(93 rows)
+
+Time: 3.740 ms
+                                                                                                                                                                                                            QUERY PLAN                                                                                                                                                                                                            
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=66.38..66.55 rows=67 width=136) (actual time=0.109..0.111 rows=0 loops=1)
+   Output: canonical_month_status.state, canonical_month_status.file_type, canonical_month_status.atomic_month, canonical_month_status.pending_rebuild_events, canonical_month_status.canonical_latest_status
+   Buffers: shared hit=9
+   ->  Sort  (cost=66.38..66.55 rows=67 width=136) (actual time=0.108..0.110 rows=0 loops=1)
+         Output: canonical_month_status.state, canonical_month_status.file_type, canonical_month_status.atomic_month, canonical_month_status.pending_rebuild_events, canonical_month_status.canonical_latest_status
+         Sort Key: canonical_month_status.pending_rebuild_events DESC, canonical_month_status.atomic_month DESC
+         Sort Method: quicksort  Memory: 25kB
+         Buffers: shared hit=9
+         ->  Subquery Scan on canonical_month_status  (cost=55.84..64.35 rows=67 width=136) (actual time=0.061..0.064 rows=0 loops=1)
+               Output: canonical_month_status.state, canonical_month_status.file_type, canonical_month_status.atomic_month, canonical_month_status.pending_rebuild_events, canonical_month_status.canonical_latest_status
+               Buffers: shared hit=3
+               ->  Hash Left Join  (cost=55.84..63.68 rows=67 width=344) (actual time=0.061..0.063 rows=0 loops=1)
+                     Output: COALESCE(ranked.state, smp.state), COALESCE(ranked.file_type, smp.file_type), COALESCE(ranked.atomic_month, smp.atomic_month), NULL::text, NULL::text, ranked.status, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::text, NULL::text, NULL::text, NULL::bigint, NULL::bigint, NULL::timestamp with time zone, COALESCE(qp.pending_rebuild_events, '0'::bigint), NULL::bigint
+                     Inner Unique: true
+                     Hash Cond: ((COALESCE(ranked.state, smp.state) = qp.state) AND (COALESCE(ranked.file_type, smp.file_type) = qp.file_type) AND (COALESCE(ranked.atomic_month, smp.atomic_month) = qp.atomic_month))
+                     Filter: ((COALESCE(qp.pending_rebuild_events, '0'::bigint) > 0) OR (ranked.status = 'FAILED'::text))
+                     Buffers: shared hit=3
+                     ->  Hash Full Join  (cost=46.23..52.49 rows=200 width=224) (actual time=0.060..0.062 rows=0 loops=1)
+                           Output: ranked.state, ranked.file_type, ranked.atomic_month, ranked.status, smp.state, smp.file_type, smp.atomic_month
+                           Hash Cond: ((smp.state = ranked.state) AND (smp.file_type = ranked.file_type) AND (smp.atomic_month = ranked.atomic_month))
+                           Buffers: shared hit=3
+                           ->  HashAggregate  (cost=14.72..16.73 rows=200 width=104) (actual time=0.010..0.010 rows=0 loops=1)
+                                 Output: smp.state, smp.file_type, smp.atomic_month, NULL::bigint
+                                 Group Key: smp.state, smp.file_type, smp.atomic_month
+                                 Batches: 1  Memory Usage: 40kB
+                                 ->  Seq Scan on public.submitter_month_pointer smp  (cost=0.00..12.70 rows=270 width=96) (actual time=0.006..0.006 rows=0 loops=1)
+                                       Output: smp.state, smp.file_type, smp.submitter_id, smp.atomic_month, smp.winning_submission_id, smp.replaced_submission_id, smp.winning_validation_run_id, smp.winner_timestamp, smp.updated_at, smp.reason
+                           ->  Hash  (cost=31.49..31.49 rows=1 width=160) (actual time=0.039..0.040 rows=0 loops=1)
+                                 Output: ranked.state, ranked.file_type, ranked.atomic_month, ranked.status, ranked.canonical_schema_id
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                 Buffers: shared hit=3
+                                 ->  Subquery Scan on ranked  (cost=21.89..31.49 rows=1 width=160) (actual time=0.039..0.040 rows=0 loops=1)
+                                       Output: ranked.state, ranked.file_type, ranked.atomic_month, ranked.status, ranked.canonical_schema_id
+                                       Filter: (ranked.rn = 1)
+                                       Buffers: shared hit=3
+                                       ->  WindowAgg  (cost=21.89..28.49 rows=240 width=312) (actual time=0.039..0.039 rows=0 loops=1)
+                                             Output: cmb.canonical_month_build_id, cmb.state, cmb.file_type, cmb.atomic_month, cmb.canonical_schema_id, cmb.started_at, NULL::timestamp with time zone, cmb.status, NULL::text, NULL::text, NULL::text, row_number() OVER (?)
+                                             Run Condition: (row_number() OVER (?) <= 1)
+                                             Buffers: shared hit=3
+                                             ->  Sort  (cost=21.89..22.49 rows=240 width=200) (actual time=0.036..0.036 rows=0 loops=1)
+                                                   Output: cmb.canonical_month_build_id, cmb.state, cmb.file_type, cmb.atomic_month, cmb.started_at, cmb.canonical_schema_id, cmb.status
+                                                   Sort Key: cmb.state, cmb.file_type, cmb.atomic_month, cmb.started_at DESC, cmb.canonical_month_build_id DESC
+                                                   Sort Method: quicksort  Memory: 25kB
+                                                   Buffers: shared hit=3
+                                                   ->  Seq Scan on public.canonical_month_build cmb  (cost=0.00..12.40 rows=240 width=200) (actual time=0.004..0.004 rows=0 loops=1)
+                                                         Output: cmb.canonical_month_build_id, cmb.state, cmb.file_type, cmb.atomic_month, cmb.started_at, cmb.canonical_schema_id, cmb.status
+                     ->  Hash  (cost=9.57..9.57 rows=2 width=104) (never executed)
+                           Output: qp.pending_rebuild_events, qp.state, qp.file_type, qp.atomic_month
+                           ->  Subquery Scan on qp  (cost=9.51..9.57 rows=2 width=104) (never executed)
+                                 Output: qp.pending_rebuild_events, qp.state, qp.file_type, qp.atomic_month
+                                 ->  GroupAggregate  (cost=9.51..9.55 rows=2 width=104) (never executed)
+                                       Output: crq.state, crq.file_type, crq.atomic_month, count(*)
+                                       Group Key: crq.state, crq.file_type, crq.atomic_month
+                                       ->  Sort  (cost=9.51..9.51 rows=2 width=96) (never executed)
+                                             Output: crq.state, crq.file_type, crq.atomic_month
+                                             Sort Key: crq.state, crq.file_type, crq.atomic_month
+                                             ->  Bitmap Heap Scan on public.canonical_rebuild_queue crq  (cost=4.16..9.50 rows=2 width=96) (never executed)
+                                                   Output: crq.state, crq.file_type, crq.atomic_month
+                                                   Recheck Cond: (crq.processed_at IS NULL)
+                                                   ->  Bitmap Index Scan on ix_canonical_rebuild_queue_unprocessed  (cost=0.00..4.16 rows=2 width=0) (never executed)
+                                                         Index Cond: (crq.processed_at IS NULL)
+ Planning:
+   Buffers: shared hit=179 read=3
+ Planning Time: 2.349 ms
+ Execution Time: 0.290 ms
+(65 rows)
+
+Time: 4.647 ms
+                                                                                                                QUERY PLAN                                                                                                                
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=66.16..66.28 rows=50 width=40) (actual time=0.287..0.290 rows=0 loops=1)
+   Output: s.submitter_id, (count(*) FILTER (WHERE (NOT vf.passed)))
+   Buffers: shared read=1 dirtied=1
+   ->  Sort  (cost=66.16..66.51 rows=140 width=40) (actual time=0.286..0.289 rows=0 loops=1)
+         Output: s.submitter_id, (count(*) FILTER (WHERE (NOT vf.passed)))
+         Sort Key: (count(*) FILTER (WHERE (NOT vf.passed))) DESC
+         Sort Method: quicksort  Memory: 25kB
+         Buffers: shared read=1 dirtied=1
+         ->  HashAggregate  (cost=60.11..61.51 rows=140 width=40) (actual time=0.278..0.280 rows=0 loops=1)
+               Output: s.submitter_id, count(*) FILTER (WHERE (NOT vf.passed))
+               Group Key: s.submitter_id
+               Batches: 1  Memory Usage: 40kB
+               Buffers: shared read=1 dirtied=1
+               ->  Hash Join  (cost=43.33..59.41 rows=140 width=33) (actual time=0.276..0.278 rows=0 loops=1)
+                     Output: s.submitter_id, vf.passed
+                     Inner Unique: true
+                     Hash Cond: (vf.rule_id = vrule.rule_id)
+                     Buffers: shared read=1 dirtied=1
+                     ->  Hash Join  (cost=27.93..43.63 rows=140 width=65) (actual time=0.017..0.019 rows=0 loops=1)
+                           Output: vf.passed, vf.rule_id, s.submitter_id
+                           Inner Unique: true
+                           Hash Cond: (vr.submission_id = s.submission_id)
+                           ->  Hash Join  (cost=14.55..29.87 rows=140 width=65) (never executed)
+                                 Output: vf.passed, vf.rule_id, vr.submission_id
+                                 Inner Unique: true
+                                 Hash Cond: (vf.validation_run_id = vr.validation_run_id)
+                                 ->  Seq Scan on public.validation_finding vf  (cost=0.00..14.20 rows=420 width=65) (never executed)
+                                       Output: vf.validation_finding_id, vf.validation_run_id, vf.rule_id, vf.scope_month, vf.violations_count, vf.denominator_count, vf.violations_rate, vf.sample_object_key, vf.passed, vf.computed_at
+                                 ->  Hash  (cost=13.68..13.68 rows=70 width=96) (never executed)
+                                       Output: vr.validation_run_id, vr.submission_id, vr.rule_set_id
+                                       ->  Seq Scan on public.validation_run vr  (cost=0.00..13.68 rows=70 width=96) (never executed)
+                                             Output: vr.validation_run_id, vr.submission_id, vr.rule_set_id
+                                             Filter: (vr.ended_at >= (now() - '30 days'::interval))
+                           ->  Hash  (cost=11.50..11.50 rows=150 width=64) (actual time=0.002..0.002 rows=0 loops=1)
+                                 Output: s.submitter_id, s.submission_id
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                 ->  Seq Scan on public.submission s  (cost=0.00..11.50 rows=150 width=64) (actual time=0.002..0.002 rows=0 loops=1)
+                                       Output: s.submitter_id, s.submission_id
+                     ->  Hash  (cost=12.40..12.40 rows=240 width=32) (actual time=0.251..0.251 rows=3 loops=1)
+                           Output: vrule.rule_id
+                           Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                           Buffers: shared read=1 dirtied=1
+                           ->  Seq Scan on public.validation_rule vrule  (cost=0.00..12.40 rows=240 width=32) (actual time=0.240..0.241 rows=3 loops=1)
+                                 Output: vrule.rule_id
+                                 Buffers: shared read=1 dirtied=1
+ Planning:
+   Buffers: shared hit=133
+ Planning Time: 1.394 ms
+ Execution Time: 0.403 ms
+(49 rows)
+
+Time: 3.718 ms

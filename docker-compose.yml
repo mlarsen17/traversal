@@ -213,6 +213,31 @@ services:
       REDASH_SECRET_KEY: ${REDASH_SECRET_KEY}
     command: ["scheduler"]
 
+  redash_bootstrap:
+    image: redash/redash:10.1.0.b50633
+    container_name: redash_bootstrap
+    env_file:
+      - .env
+    depends_on:
+      metadata_grants:
+        condition: service_completed_successfully
+      redash_server:
+        condition: service_started
+    volumes:
+      - ./infra/redash/provisioning:/opt/redash/bootstrap:ro
+    environment:
+      REDASH_DATABASE_URL: postgresql://${REDASH_PG_USER}:${REDASH_PG_PASSWORD}@redash_postgres:5432/${REDASH_PG_DB}
+      REDASH_REDIS_URL: redis://redash_redis:6379/0
+      REDASH_COOKIE_SECRET: ${REDASH_COOKIE_SECRET}
+      REDASH_SECRET_KEY: ${REDASH_SECRET_KEY}
+      REDASH_URL: http://redash_server:5000
+      REDASH_ADMIN_EMAIL: ${REDASH_ADMIN_EMAIL}
+      REDASH_ADMIN_NAME: ${REDASH_ADMIN_NAME}
+      REDASH_ADMIN_PASSWORD: ${REDASH_ADMIN_PASSWORD}
+      REDASH_PLATFORM_DS_NAME: ${REDASH_PLATFORM_DS_NAME}
+    command: ["/bin/sh", "/opt/redash/bootstrap/bootstrap_compose.sh"]
+    restart: "no"
+
   dagster_webserver:
     build:
       context: .

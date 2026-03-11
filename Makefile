@@ -1,6 +1,9 @@
 up:
 	docker compose up --build
 
+up-detached:
+	docker compose up -d --build
+
 down:
 	docker compose down -v
 
@@ -18,3 +21,12 @@ minio-shell:
 
 dev-up:
 	./dev_up.sh
+
+serving-connectivity-smoke:
+	./infra/tests/serving_connectivity_smoke.sh
+
+serving-perf-baseline:
+	./infra/tests/serving_performance_baseline.sh
+
+redash-bootstrap:
+	docker compose up redash_bootstrap
