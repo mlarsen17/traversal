@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,14 @@ class GroupCandidate:
     inbox_prefix: str
     grouping_method: str
     object_keys: list[str]
+
+
+@dataclass(frozen=True)
+class RoutingDecision:
+    file_type: str
+    layout_id: str | None
+    reason: str
+    evidence: dict[str, object]
 
 
 def now_utc() -> datetime:
@@ -189,22 +198,181 @@ def find_closed_groups(engine, quiescence_minutes: int = 10, clock=now_utc) -> l
     return groups
 
 
-def _resolve_layout_id(conn, parsed: ParsedFilename) -> str | None:
-    if parsed.file_type == "unknown" or not parsed.layout_version:
-        return None
-    row = conn.execute(
+def _load_routing_rules(conn, submitter_id: str):
+    try:
+        return conn.execute(
+            text(
+                """
+                SELECT
+                    routing_config_id,
+                    submitter_id,
+                    file_type,
+                    filename_pattern,
+                    file_extension,
+                    default_layout_id,
+                    priority
+                FROM submitter_file_config
+                WHERE status = 'ACTIVE'
+                  AND submitter_id IN (:submitter_id, '*')
+                ORDER BY priority, routing_config_id
+                """
+            ),
+            {"submitter_id": submitter_id},
+        ).fetchall()
+    except Exception:
+        return []
+
+
+def _rule_matches_filename(rule, filename: str) -> bool:
+    if rule.file_extension and not filename.lower().endswith(f".{rule.file_extension.lower()}"):
+        return False
+    if rule.filename_pattern and not re.match(rule.filename_pattern, filename):
+        return False
+    return True
+
+
+def _fallback_layout_id(
+    conn,
+    *,
+    submitter_id: str,
+    file_type: str,
+    layout_version: str | None,
+) -> tuple[str | None, str]:
+    where_layout = ""
+    params: dict[str, object] = {"submitter_id": submitter_id, "file_type": file_type}
+    if layout_version:
+        where_layout = "AND layout_version = :layout_version"
+        params["layout_version"] = layout_version
+
+    rows = conn.execute(
         text(
-            """
-            SELECT layout_id
+            f"""
+            SELECT layout_id, submitter_id
             FROM layout_registry
             WHERE file_type = :file_type
-              AND layout_version = :layout_version
               AND status = 'ACTIVE'
+              AND submitter_id IN (:submitter_id, '*')
+              {where_layout}
+            ORDER BY layout_id
             """
         ),
-        {"file_type": parsed.file_type, "layout_version": parsed.layout_version},
-    ).fetchone()
-    return row.layout_id if row else None
+        params,
+    ).fetchall()
+    submitter_rows = [row for row in rows if row.submitter_id == submitter_id]
+    if len(submitter_rows) == 1:
+        return submitter_rows[0].layout_id, "submitter_single_active_layout"
+    if len(submitter_rows) > 1:
+        return None, "ambiguous_submitter_layout"
+
+    wildcard_rows = [row for row in rows if row.submitter_id == "*"]
+    if len(wildcard_rows) == 1:
+        return wildcard_rows[0].layout_id, "wildcard_single_active_layout"
+    if len(wildcard_rows) > 1:
+        return None, "ambiguous_wildcard_layout"
+    return None, "no_active_layout"
+
+
+def _resolve_routing(
+    conn,
+    *,
+    submitter_id: str,
+    filenames: list[str],
+    parsed_entries: list[ParsedFilename],
+) -> RoutingDecision:
+    rules = _load_routing_rules(conn, submitter_id)
+    matched_rules = []
+    for filename in filenames:
+        file_matches = [rule for rule in rules if _rule_matches_filename(rule, filename)]
+        matched_rules.extend(file_matches)
+
+    file_type_set = {rule.file_type for rule in matched_rules}
+    if len(file_type_set) > 1:
+        return RoutingDecision(
+            file_type="unknown",
+            layout_id=None,
+            reason="ambiguous_file_type_routing",
+            evidence={
+                "filenames": filenames,
+                "matched_rule_ids": [r.routing_config_id for r in matched_rules],
+            },
+        )
+
+    if len(file_type_set) == 1:
+        resolved_file_type = next(iter(file_type_set))
+        candidates = [rule for rule in matched_rules if rule.file_type == resolved_file_type]
+        candidates_sorted = sorted(
+            candidates,
+            key=lambda rule: (
+                0 if rule.submitter_id == submitter_id else 1,
+                rule.priority,
+                rule.routing_config_id,
+            ),
+        )
+        best = candidates_sorted[0]
+        top_score = (
+            0 if best.submitter_id == submitter_id else 1,
+            best.priority,
+        )
+        tied = [
+            rule
+            for rule in candidates_sorted
+            if (
+                (0 if rule.submitter_id == submitter_id else 1),
+                rule.priority,
+            )
+            == top_score
+        ]
+        layout_ids = {rule.default_layout_id for rule in tied}
+        if len(layout_ids) == 1:
+            return RoutingDecision(
+                file_type=resolved_file_type,
+                layout_id=best.default_layout_id,
+                reason="submitter_file_config",
+                evidence={
+                    "filenames": filenames,
+                    "matched_rule_ids": [r.routing_config_id for r in candidates],
+                    "chosen_rule_id": best.routing_config_id,
+                },
+            )
+        return RoutingDecision(
+            file_type=resolved_file_type,
+            layout_id=None,
+            reason="ambiguous_layout_routing",
+            evidence={
+                "filenames": filenames,
+                "matched_rule_ids": [r.routing_config_id for r in candidates],
+            },
+        )
+
+    parsed_types = {entry.file_type for entry in parsed_entries if entry.file_type != "unknown"}
+    if len(parsed_types) > 1:
+        return RoutingDecision(
+            file_type="unknown",
+            layout_id=None,
+            reason="ambiguous_legacy_file_type",
+            evidence={"filenames": filenames, "parsed_file_types": sorted(parsed_types)},
+        )
+
+    parsed = sorted(parsed_entries, key=lambda entry: entry.confidence, reverse=True)[0]
+    if parsed.file_type == "unknown":
+        return RoutingDecision(
+            file_type="unknown",
+            layout_id=None,
+            reason="no_submitter_signal",
+            evidence={"filenames": filenames},
+        )
+    layout_id, reason = _fallback_layout_id(
+        conn,
+        submitter_id=submitter_id,
+        file_type=parsed.file_type,
+        layout_version=parsed.layout_version,
+    )
+    return RoutingDecision(
+        file_type=parsed.file_type,
+        layout_id=layout_id,
+        reason=reason,
+        evidence={"filenames": filenames, "legacy_layout_version": parsed.layout_version},
+    )
 
 
 def _group_fingerprint(prefix: str, files: list[ObjectMetadata]) -> str:
@@ -257,13 +425,24 @@ def process_group(
                 {"object_key": object_key},
             )
 
-        parsed_entries = [registry.parse(os.path.basename(meta.key)) for meta in files]
+        filenames = [os.path.basename(meta.key) for meta in files]
+        parsed_entries = [registry.parse(filename) for filename in filenames]
         parsed = sorted(parsed_entries, key=lambda entry: entry.confidence, reverse=True)[0]
+        routing = _resolve_routing(
+            conn,
+            submitter_id=candidate.submitter_id,
+            filenames=filenames,
+            parsed_entries=parsed_entries,
+        )
         received_at = clock()
         submission_id = str(uuid.uuid4())
-        submission_status = "READY_FOR_PARSE" if parsed.file_type != "unknown" else "NEEDS_REVIEW"
+        submission_status = (
+            "READY_FOR_PARSE"
+            if routing.file_type != "unknown" and routing.layout_id
+            else "NEEDS_REVIEW"
+        )
 
-        raw_prefix = f"{RAW_ROOT}/{candidate.submitter_id}/{parsed.file_type}/{submission_id}"
+        raw_prefix = f"{RAW_ROOT}/{candidate.submitter_id}/{routing.file_type}/{submission_id}"
         manifest_key = f"{raw_prefix}/manifest.generated.json"
 
         conn.execute(
@@ -308,8 +487,8 @@ def process_group(
                 "submission_id": submission_id,
                 "submitter_id": candidate.submitter_id,
                 "state": None,
-                "file_type": parsed.file_type,
-                "layout_id": _resolve_layout_id(conn, parsed),
+                "file_type": routing.file_type,
+                "layout_id": routing.layout_id,
                 "coverage_start_month": parsed.coverage_start_month,
                 "coverage_end_month": parsed.coverage_end_month,
                 "received_at": received_at,
@@ -347,10 +526,13 @@ def process_group(
             "inbox_prefix": candidate.inbox_prefix,
             "raw_prefix": raw_prefix,
             "inferred": {
-                "file_type": parsed.file_type,
+                "file_type": routing.file_type,
                 "coverage_start_month": parsed.coverage_start_month,
                 "coverage_end_month": parsed.coverage_end_month,
                 "layout_version": parsed.layout_version,
+                "resolved_layout_id": routing.layout_id,
+                "routing_reason": routing.reason,
+                "routing_evidence": routing.evidence,
             },
             "files": moved_files,
         }

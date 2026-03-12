@@ -1,5 +1,7 @@
 {
+  "submitter_id": "*",
   "file_type": "members",
+  "layout_key": "members",
   "layout_version": "v1",
   "status": "ACTIVE",
   "schema": {

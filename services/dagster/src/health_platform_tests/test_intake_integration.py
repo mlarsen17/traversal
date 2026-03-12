@@ -16,7 +16,11 @@ import pytest
 from dagster import build_asset_context, build_sensor_context
 from sqlalchemy import create_engine, text
 
-from health_platform.assets.layout_assets import LAYOUT_ROOT, sync_layout_registry
+from health_platform.assets.layout_assets import (
+    LAYOUT_ROOT,
+    sync_layout_registry,
+    sync_submitter_file_config,
+)
 from health_platform.canonical.assets import MAPPING_ROOT, SCHEMA_ROOT, sync_canonical_registry
 from health_platform.gold_canonical.jobs import build_canonical_month_job
 from health_platform.gold_canonical.sensors import canonical_rebuild_sensor
@@ -97,7 +101,9 @@ def env(tmp_path, monkeypatch, moto_s3_endpoint_url):
             """
             CREATE TABLE layout_registry (
                 layout_id TEXT PRIMARY KEY,
+                submitter_id TEXT NOT NULL,
                 file_type TEXT NOT NULL,
+                layout_key TEXT NOT NULL,
                 layout_version TEXT NOT NULL,
                 schema_json TEXT NOT NULL,
                 parser_config_json TEXT NOT NULL,
@@ -108,7 +114,25 @@ def env(tmp_path, monkeypatch, moto_s3_endpoint_url):
             """
         )
         conn.exec_driver_sql(
-            "CREATE UNIQUE INDEX ux_layout_registry_file_type_version ON layout_registry(file_type, layout_version)"
+            "CREATE UNIQUE INDEX ux_layout_registry_submitter_identity ON layout_registry(submitter_id, file_type, layout_key, layout_version)"
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE submitter_file_config (
+                routing_config_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                submitter_id TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                filename_pattern TEXT,
+                file_extension TEXT,
+                default_layout_id TEXT NOT NULL,
+                delimiter TEXT,
+                has_header BOOLEAN,
+                header_signature_json TEXT,
+                priority INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
         )
         conn.exec_driver_sql(
             """
@@ -434,6 +458,11 @@ def _execute_register(run_request, engine, store):
     assert result.success
 
 
+def _sync_layout_and_routing(engine):
+    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    sync_submitter_file_config(build_asset_context(resources={"metadata_db": engine}))
+
+
 def _execute_parse(run_config, engine, store):
     result = parse_submission_job.execute_in_process(
         run_config=run_config,
@@ -572,16 +601,17 @@ def test_marker_ingestion_happy_path(env):
         row = conn.execute(
             text(
                 """
-                SELECT submission_id, file_type, coverage_start_month, coverage_end_month, status, manifest_object_key
-                FROM submission
-                """
+                    SELECT submission_id, file_type, coverage_start_month, coverage_end_month, status, layout_id, manifest_object_key
+                    FROM submission
+                    """
             )
         ).one()
 
     assert row.file_type == "medical"
     assert row.coverage_start_month == "202501"
     assert row.coverage_end_month == "202503"
-    assert row.status == "READY_FOR_PARSE"
+    assert row.status == "NEEDS_REVIEW"
+    assert row.layout_id is None
     assert (
         store.stat_object(f"raw/acme/medical/{row.submission_id}/data/medical_202501_202503.txt")
         is not None
@@ -659,25 +689,180 @@ def test_unknown_classification_needs_review(env):
     assert row.file_type == "unknown"
 
 
-def test_layout_registry_sync(env):
-    engine, _ = env
-    result = sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
-    assert result.metadata["layouts_loaded"] >= 3
+def test_submitter_specific_layout_routing(env):
+    engine, store = env
+    _sync_layout_and_routing(engine)
+
+    with engine.begin() as conn:
+        alt_layout_id = str(uuid.uuid4())
+        schema_json = conn.execute(
+            text(
+                "SELECT schema_json FROM layout_registry WHERE submitter_id='*' AND file_type='medical' AND layout_key='medical' AND layout_version='v1'"
+            )
+        ).scalar_one()
+        conn.execute(
+            text(
+                """
+                INSERT INTO layout_registry(
+                    layout_id, submitter_id, file_type, layout_key, layout_version,
+                    schema_json, parser_config_json, status
+                ) VALUES (
+                    :layout_id, 'cigna', 'medical', 'medical_cigna', 'v1',
+                    :schema_json, '{}', 'ACTIVE'
+                )
+                """
+            ),
+            {"layout_id": alt_layout_id, "schema_json": schema_json},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO submitter_file_config(
+                    submitter_id, file_type, filename_pattern, file_extension, default_layout_id,
+                    delimiter, has_header, header_signature_json, priority, status, created_at
+                ) VALUES (
+                    'cigna', 'medical', '^medical_\\d{6}_\\d{6}\\.(txt|csv|gz)$', NULL, :default_layout_id,
+                    NULL, NULL, '{}', 10, 'ACTIVE', :created_at
+                )
+                """
+            ),
+            {
+                "default_layout_id": alt_layout_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    store.put_bytes("inbox/acme/drop1/medical_202501_202501.csv", b"a")
+    store.put_bytes("inbox/acme/drop1/_SUCCESS", b"")
+    store.put_bytes("inbox/cigna/drop1/medical_202501_202501.csv", b"b")
+    store.put_bytes("inbox/cigna/drop1/_SUCCESS", b"")
+
+    _execute_discovery(engine, store)
+    requests = _run_grouping_sensor(engine, store)
+    for request in requests:
+        _execute_register(request, engine, store)
 
     with engine.begin() as conn:
         rows = conn.execute(
-            text("SELECT file_type, layout_version FROM layout_registry")
+            text(
+                """
+                SELECT submitter_id, layout_id, status
+                FROM submission
+                WHERE file_type='medical'
+                ORDER BY submitter_id
+                """
+            )
+        ).fetchall()
+
+    assert len(rows) == 2
+    assert rows[0].submitter_id == "acme"
+    assert rows[0].status == "READY_FOR_PARSE"
+    assert rows[1].submitter_id == "cigna"
+    assert rows[1].status == "READY_FOR_PARSE"
+    assert rows[0].layout_id != rows[1].layout_id
+
+
+def test_ambiguous_layout_routing_needs_review(env):
+    engine, store = env
+    _sync_layout_and_routing(engine)
+
+    with engine.begin() as conn:
+        base_layout_id = conn.execute(
+            text(
+                "SELECT layout_id FROM layout_registry WHERE submitter_id='*' AND file_type='medical' AND layout_key='medical' AND layout_version='v1'"
+            )
+        ).scalar_one()
+        alt_layout_id = str(uuid.uuid4())
+        schema_json = conn.execute(
+            text("SELECT schema_json FROM layout_registry WHERE layout_id=:layout_id"),
+            {"layout_id": base_layout_id},
+        ).scalar_one()
+        conn.execute(
+            text(
+                """
+                INSERT INTO layout_registry(
+                    layout_id, submitter_id, file_type, layout_key, layout_version,
+                    schema_json, parser_config_json, status
+                ) VALUES (
+                    :layout_id, 'acme', 'medical', 'medical_alt', 'v1',
+                    :schema_json, '{}', 'ACTIVE'
+                )
+                """
+            ),
+            {"layout_id": alt_layout_id, "schema_json": schema_json},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO submitter_file_config(
+                    submitter_id, file_type, filename_pattern, file_extension, default_layout_id,
+                    delimiter, has_header, header_signature_json, priority, status, created_at
+                ) VALUES (
+                    'acme', 'medical', '^medical_\\d{6}_\\d{6}\\.(txt|csv|gz)$', NULL, :default_layout_id,
+                    NULL, NULL, '{}', 100, 'ACTIVE', :created_at
+                )
+                """
+            ),
+            {
+                "default_layout_id": alt_layout_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO submitter_file_config(
+                    submitter_id, file_type, filename_pattern, file_extension, default_layout_id,
+                    delimiter, has_header, header_signature_json, priority, status, created_at
+                ) VALUES (
+                    'acme', 'medical', '^medical_\\d{6}_\\d{6}\\.(txt|csv|gz)$', NULL, :default_layout_id,
+                    NULL, NULL, '{}', 100, 'ACTIVE', :created_at
+                )
+                """
+            ),
+            {
+                "default_layout_id": base_layout_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    store.put_bytes("inbox/acme/drop1/medical_202501_202501.csv", b"a")
+    store.put_bytes("inbox/acme/drop1/_SUCCESS", b"")
+    _execute_discovery(engine, store)
+    requests = _run_grouping_sensor(engine, store)
+    _execute_register(requests[0], engine, store)
+
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT status, layout_id FROM submission")).one()
+    assert row.status == "NEEDS_REVIEW"
+    assert row.layout_id is None
+
+
+def test_layout_registry_sync(env):
+    engine, _ = env
+    result = sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    routing_result = sync_submitter_file_config(
+        build_asset_context(resources={"metadata_db": engine})
+    )
+    assert result.metadata["layouts_loaded"] >= 3
+    assert routing_result.metadata["routing_rules_loaded"] >= 3
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT submitter_id, file_type, layout_key, layout_version FROM layout_registry")
         ).fetchall()
 
     assert {tuple(row) for row in rows} >= {
-        ("members", "v1"),
-        ("medical", "v1"),
-        ("pharmacy", "v1"),
+        ("*", "members", "members", "v1"),
+        ("*", "medical", "medical", "v1"),
+        ("*", "pharmacy", "pharmacy", "v1"),
     }
 
 
 def test_layout_files_are_valid_json():
     for layout_file in sorted(Path(LAYOUT_ROOT).glob("*/*.json")):
+        if layout_file.parent.name == "routing":
+            continue
         payload = json.loads(layout_file.read_text())
         assert "schema" in payload
         assert "parser_config" in payload
@@ -691,7 +876,7 @@ def _seed_ready_medical_submission(
     object_name: str = "medical_202501_202503.csv",
     drop_name: str = "drop1",
 ):
-    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    _sync_layout_and_routing(engine)
     store.put_bytes(f"inbox/acme/{drop_name}/{object_name}", csv_payload)
     store.put_bytes(f"inbox/acme/{drop_name}/_SUCCESS", b"")
     _execute_discovery(engine, store)
@@ -1331,7 +1516,7 @@ def test_canonical_registry_files_are_valid_json():
 
 def test_canonical_union_across_submitters(env):
     engine, store = env
-    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    _sync_layout_and_routing(engine)
     sync_canonical_registry(build_asset_context(resources={"metadata_db": engine}))
 
     for submitter_id, encounter_id in (("aetna", "enc1"), ("cigna", "enc2")):
@@ -1339,7 +1524,7 @@ def test_canonical_union_across_submitters(env):
         with engine.begin() as conn:
             layout_id = conn.execute(
                 text(
-                    "SELECT layout_id FROM layout_registry WHERE file_type='medical' AND layout_version='v1'"
+                    "SELECT layout_id FROM layout_registry WHERE submitter_id='*' AND file_type='medical' AND layout_key='medical' AND layout_version='v1'"
                 )
             ).scalar_one()
             conn.execute(
@@ -1427,14 +1612,14 @@ def test_canonical_union_across_submitters(env):
 
 def test_canonical_idempotency_skip(env):
     engine, store = env
-    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    _sync_layout_and_routing(engine)
     sync_canonical_registry(build_asset_context(resources={"metadata_db": engine}))
 
     submission_id = str(uuid.uuid4())
     with engine.begin() as conn:
         layout_id = conn.execute(
             text(
-                "SELECT layout_id FROM layout_registry WHERE file_type='medical' AND layout_version='v1'"
+                "SELECT layout_id FROM layout_registry WHERE submitter_id='*' AND file_type='medical' AND layout_key='medical' AND layout_version='v1'"
             )
         ).scalar_one()
         conn.execute(
@@ -1546,14 +1731,14 @@ def test_canonical_idempotency_skip(env):
 
 def test_canonical_correction_triggers_rebuild(env):
     engine, store = env
-    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    _sync_layout_and_routing(engine)
     sync_canonical_registry(build_asset_context(resources={"metadata_db": engine}))
 
     layout_id = None
     with engine.begin() as conn:
         layout_id = conn.execute(
             text(
-                "SELECT layout_id FROM layout_registry WHERE file_type='medical' AND layout_version='v1'"
+                "SELECT layout_id FROM layout_registry WHERE submitter_id='*' AND file_type='medical' AND layout_key='medical' AND layout_version='v1'"
             )
         ).scalar_one()
 
@@ -1656,13 +1841,13 @@ def test_canonical_correction_triggers_rebuild(env):
 
 def test_canonical_mapping_differences_union(env):
     engine, store = env
-    sync_layout_registry(build_asset_context(resources={"metadata_db": engine}))
+    _sync_layout_and_routing(engine)
     sync_canonical_registry(build_asset_context(resources={"metadata_db": engine}))
 
     with engine.begin() as conn:
         base_layout_id = conn.execute(
             text(
-                "SELECT layout_id FROM layout_registry WHERE file_type='medical' AND layout_version='v1'"
+                "SELECT layout_id FROM layout_registry WHERE submitter_id='*' AND file_type='medical' AND layout_key='medical' AND layout_version='v1'"
             )
         ).scalar_one()
         schema_id = conn.execute(
@@ -1674,8 +1859,10 @@ def test_canonical_mapping_differences_union(env):
         conn.execute(
             text(
                 """
-                INSERT INTO layout_registry(layout_id, file_type, layout_version, schema_json, parser_config_json, status)
-                VALUES (:layout_id, 'medical', 'v2', :schema_json, '{}', 'ACTIVE')
+                INSERT INTO layout_registry(
+                    layout_id, submitter_id, file_type, layout_key, layout_version, schema_json, parser_config_json, status
+                )
+                VALUES (:layout_id, 'cigna', 'medical', 'medical_alt', 'v2', :schema_json, '{}', 'ACTIVE')
                 """
             ),
             {

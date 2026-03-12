@@ -5,6 +5,7 @@ from health_platform.assets import (
     seed_validation_rule_sets,
     sync_canonical_registry,
     sync_layout_registry,
+    sync_submitter_file_config,
 )
 from health_platform.gold_canonical.jobs import build_canonical_month_job
 from health_platform.gold_canonical.sensors import canonical_rebuild_sensor
@@ -22,6 +23,7 @@ defs = Definitions(
     assets=[
         bootstrap_heartbeat_asset,
         sync_layout_registry,
+        sync_submitter_file_config,
         sync_canonical_registry,
         seed_validation_rule_sets,
     ],

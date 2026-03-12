@@ -79,23 +79,42 @@ def sync_canonical_registry(context) -> MaterializeResult:
 
         for path in sorted(MAPPING_ROOT.glob("*/*/*.json")):
             payload = json.loads(path.read_text())
-            layout = conn.execute(
-                text(
-                    """
-                    SELECT layout_id
-                    FROM layout_registry
-                    WHERE file_type=:file_type AND layout_version=:layout_version
-                    """
-                ),
-                {
-                    "file_type": payload["file_type"],
-                    "layout_version": payload["layout_version"],
-                },
-            ).fetchone()
-            if not layout:
-                raise RuntimeError(
-                    f"Layout not found for mapping file_type={payload['file_type']} layout_version={payload['layout_version']}"
-                )
+            layout_id = payload.get("layout_id")
+            if not layout_id:
+                file_type = payload["file_type"]
+                submitter_id = payload.get("submitter_id", "*")
+                layout_key = payload.get("layout_key", file_type)
+                rows = conn.execute(
+                    text(
+                        """
+                        SELECT layout_id
+                        FROM layout_registry
+                        WHERE submitter_id=:submitter_id
+                          AND file_type=:file_type
+                          AND layout_key=:layout_key
+                          AND layout_version=:layout_version
+                        """
+                    ),
+                    {
+                        "submitter_id": submitter_id,
+                        "file_type": file_type,
+                        "layout_key": layout_key,
+                        "layout_version": payload["layout_version"],
+                    },
+                ).fetchall()
+                if len(rows) > 1:
+                    raise RuntimeError(
+                        "Ambiguous layout match for mapping "
+                        f"submitter_id={submitter_id} file_type={file_type} "
+                        f"layout_key={layout_key} layout_version={payload['layout_version']}"
+                    )
+                if not rows:
+                    raise RuntimeError(
+                        "Layout not found for mapping "
+                        f"submitter_id={submitter_id} file_type={file_type} "
+                        f"layout_key={layout_key} layout_version={payload['layout_version']}"
+                    )
+                layout_id = rows[0].layout_id
 
             schema = conn.execute(
                 text(
@@ -126,7 +145,7 @@ def sync_canonical_registry(context) -> MaterializeResult:
                     """
                 ),
                 {
-                    "layout_id": layout.layout_id,
+                    "layout_id": layout_id,
                     "canonical_schema_id": schema.canonical_schema_id,
                     "mapping_version": payload["mapping_version"],
                 },
@@ -161,7 +180,7 @@ def sync_canonical_registry(context) -> MaterializeResult:
                     ),
                     {
                         "mapping_id": str(uuid.uuid4()),
-                        "layout_id": layout.layout_id,
+                        "layout_id": layout_id,
                         "canonical_schema_id": schema.canonical_schema_id,
                         "mapping_version": payload["mapping_version"],
                         "mapping_json": json.dumps(payload["mapping"]),

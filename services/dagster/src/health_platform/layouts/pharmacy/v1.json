@@ -1,5 +1,7 @@
 {
+  "submitter_id": "*",
   "file_type": "pharmacy",
+  "layout_key": "pharmacy",
   "layout_version": "v1",
   "status": "ACTIVE",
   "schema": {

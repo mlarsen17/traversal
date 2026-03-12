@@ -1,0 +1,43 @@
+{
+  "configs": [
+    {
+      "submitter_id": "*",
+      "file_type": "medical",
+      "filename_pattern": "^medical_\\d{6}_\\d{6}\\.(txt|csv|gz)$",
+      "priority": 100,
+      "status": "ACTIVE",
+      "default_layout": {
+        "submitter_id": "*",
+        "file_type": "medical",
+        "layout_key": "medical",
+        "layout_version": "v1"
+      }
+    },
+    {
+      "submitter_id": "*",
+      "file_type": "pharmacy",
+      "filename_pattern": "^pharmacy_\\d{6}_\\d{6}\\.(txt|csv|gz)$",
+      "priority": 100,
+      "status": "ACTIVE",
+      "default_layout": {
+        "submitter_id": "*",
+        "file_type": "pharmacy",
+        "layout_key": "pharmacy",
+        "layout_version": "v1"
+      }
+    },
+    {
+      "submitter_id": "*",
+      "file_type": "members",
+      "filename_pattern": "^members_\\d{6}_\\d{6}\\.(txt|csv|gz)$",
+      "priority": 100,
+      "status": "ACTIVE",
+      "default_layout": {
+        "submitter_id": "*",
+        "file_type": "members",
+        "layout_key": "members",
+        "layout_version": "v1"
+      }
+    }
+  ]
+}
